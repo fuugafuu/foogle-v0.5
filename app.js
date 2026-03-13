@@ -55,6 +55,8 @@ const state = {
 };
 
 const elements = {
+  connectionPill: document.getElementById("connection-pill"),
+  reconnectButton: document.getElementById("reconnect-button"),
   originInput: document.getElementById("origin-input"),
   destinationInput: document.getElementById("destination-input"),
   profileSelect: document.getElementById("profile-select"),
@@ -102,6 +104,7 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 
 let previewTimer = null;
 let routeLayer = null;
+let apiHeartbeatTimer = null;
 const markers = {
   origin: null,
   destination: null,
@@ -114,6 +117,9 @@ initialize().catch((error) => {
 });
 
 function wireEvents() {
+  if (elements.reconnectButton) {
+    elements.reconnectButton.addEventListener("click", () => void detectApiBase({ quiet: false, force: true }));
+  }
   document
     .getElementById("origin-search-button")
     .addEventListener("click", () => void searchPlaces("origin"));
@@ -165,7 +171,8 @@ function wireEvents() {
 
 async function initialize() {
   setStatus("API接続先を確認しています。", "info");
-  await detectApiBase();
+  await detectApiBase({ quiet: false, force: true });
+  startConnectionMonitor();
   await loadAppInfo();
   restoreState();
 
@@ -192,22 +199,19 @@ async function initialize() {
 
   renderMapPickState();
   updateBusyState();
+  renderConnectionState();
   saveState();
 }
 
 async function loadAppInfo() {
-  if (!state.apiAvailable) {
-    state.appInfo = fallbackAppInfo;
-    renderAppInfo();
-    return;
-  }
-
   try {
-    state.appInfo = await fetchJson(buildApiUrl("/api/app-info"));
+    state.appInfo = await requestApiJson("/api/app-info", {}, { quiet: true });
   } catch (error) {
     console.warn(error);
     state.appInfo = fallbackAppInfo;
-    setStatus("アプリ情報の取得に失敗したため、既定値で続行します。", "warning");
+    if (!state.apiAvailable) {
+      setStatus("ローカルサーバー待機中です。起動後に自動再接続します。", "warning");
+    }
   }
 
   renderAppInfo();
@@ -295,10 +299,6 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
   input.value = searchText;
   setStatus(`${target === "origin" ? "出発地" : "目的地"}を検索しています。`, "info");
 
-  if (!ensureApiAvailable()) {
-    return;
-  }
-
   try {
     const params = new URLSearchParams({ q: searchText, limit: "6" });
     if (state.currentLocation) {
@@ -306,9 +306,7 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
       params.set("near_lon", String(state.currentLocation.lon));
     }
 
-    const data = await withBusy(() =>
-      fetchJson(buildApiUrl(`/api/places/search?${params.toString()}`)),
-    );
+    const data = await withBusy(() => requestApiJson(`/api/places/search?${params.toString()}`));
     const items = data.items || [];
 
     if (!items.length) {
@@ -510,21 +508,9 @@ function schedulePreferencePreview(immediate = false) {
 }
 
 async function previewPreferences({ quiet = false } = {}) {
-  if (!state.apiAvailable) {
-    renderPreferenceTags({
-      profile: elements.profileSelect.value,
-      detected: [],
-      summary: "ローカルサーバー未接続",
-    });
-    if (!quiet) {
-      setStatus("要望解析には `パソコンサーバー/start.ps1` の起動が必要です。", "warning");
-    }
-    return;
-  }
-
   try {
     const data = await withBusy(() =>
-      fetchJson(buildApiUrl("/api/preferences/parse"), {
+      requestApiJson("/api/preferences/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -543,7 +529,14 @@ async function previewPreferences({ quiet = false } = {}) {
     }
   } catch (error) {
     console.error(error);
-    setStatus(error.message || "要望解析に失敗しました。", "error");
+    renderPreferenceTags({
+      profile: elements.profileSelect.value,
+      detected: [],
+      summary: "ローカルサーバー待機中",
+    });
+    if (!quiet) {
+      setStatus(error.message || "要望解析に失敗しました。", "warning");
+    }
   }
 }
 
@@ -566,15 +559,11 @@ async function requestRoute() {
     return;
   }
 
-  if (!ensureApiAvailable()) {
-    return;
-  }
-
   setStatus("ルートを作成しています。", "info");
 
   try {
     const route = await withBusy(() =>
-      fetchJson(buildApiUrl("/api/routes"), {
+      requestApiJson("/api/routes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -944,57 +933,142 @@ async function withBusy(task) {
   }
 }
 
-async function detectApiBase() {
+function buildApiCandidates() {
   const candidates = [];
+  const pushCandidate = (candidate) => {
+    if (!candidate || candidates.includes(candidate)) {
+      return;
+    }
+    candidates.push(candidate);
+  };
+
+  pushCandidate(state.apiBase);
 
   if (location.protocol === "http:" || location.protocol === "https:") {
-    candidates.push(location.origin);
-  }
-  if (!candidates.includes(fallbackApiOrigin)) {
-    candidates.push(fallbackApiOrigin);
+    pushCandidate(location.origin);
   }
 
-  for (const candidate of candidates) {
-    try {
-      const response = await fetch(`${candidate}/api/health`);
-      if (response.ok) {
-        state.apiBase = candidate;
-        state.apiAvailable = true;
+  if (location.hostname) {
+    pushCandidate(`http://${location.hostname}:8000`);
+  }
 
-        if (candidate === location.origin) {
-          setStatus("現在の表示元と同じサーバーに接続しました。", "success");
-        } else {
-          setStatus(`API接続先を ${candidate} に切り替えました。`, "success");
-        }
-        return;
-      }
-    } catch (error) {
-      console.warn(`API health check failed: ${candidate}`, error);
+  pushCandidate("http://127.0.0.1:8000");
+  pushCandidate("http://localhost:8000");
+
+  return candidates;
+}
+
+function buildApiUrl(path, base = state.apiBase) {
+  return `${base}${path}`;
+}
+
+function renderConnectionState() {
+  if (!elements.connectionPill) {
+    return;
+  }
+
+  elements.connectionPill.className = `connection-pill ${state.apiAvailable ? "online" : "offline"}`;
+  elements.connectionPill.textContent = state.apiAvailable
+    ? `接続中 ${state.apiBase.replace("http://", "")}`
+    : "サーバー待機中";
+}
+
+function setConnectionState(isAvailable, base = state.apiBase, { quiet = false } = {}) {
+  const wasAvailable = state.apiAvailable;
+  const changed = state.apiAvailable !== isAvailable || state.apiBase !== base;
+  state.apiAvailable = isAvailable;
+  state.apiBase = base;
+  renderConnectionState();
+
+  if (!wasAvailable && isAvailable) {
+    void loadAppInfo();
+    if (elements.preferencesInput.value.trim()) {
+      void previewPreferences({ quiet: true });
     }
   }
 
-  state.apiBase = fallbackApiOrigin;
-  state.apiAvailable = false;
-  setStatus(
-    "CSS/JS は読み込めています。API を使うには `パソコンサーバー/start.ps1` を起動してください。",
-    "warning",
-  );
-}
-
-function buildApiUrl(path) {
-  return `${state.apiBase}${path}`;
-}
-
-function ensureApiAvailable() {
-  if (state.apiAvailable) {
-    return true;
+  if (!changed || quiet) {
+    return;
   }
 
-  setStatus(
-    "ローカルサーバー未接続です。`パソコンサーバー/start.ps1` を起動してから再試行してください。",
-    "warning",
-  );
+  if (isAvailable) {
+    setStatus(`ローカルサーバーへ接続しました: ${base}`, "success");
+  } else {
+    setStatus("ローカルサーバー待機中です。起動後に自動再接続します。", "warning");
+  }
+}
+
+async function probeApiBase(base) {
+  try {
+    const response = await fetch(buildApiUrl(`/api/health?ts=${Date.now()}`, base), {
+      cache: "no-store",
+    });
+    return response.ok;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function detectApiBase({ quiet = true, force = false } = {}) {
+  if (!force && state.apiAvailable) {
+    const stillAlive = await probeApiBase(state.apiBase);
+    if (stillAlive) {
+      setConnectionState(true, state.apiBase, { quiet: true });
+      return true;
+    }
+  }
+
+  for (const candidate of buildApiCandidates()) {
+    const available = await probeApiBase(candidate);
+    if (available) {
+      setConnectionState(true, candidate, { quiet });
+      return true;
+    }
+  }
+
+  setConnectionState(false, fallbackApiOrigin, { quiet });
   return false;
+}
+
+function startConnectionMonitor() {
+  if (apiHeartbeatTimer) {
+    clearInterval(apiHeartbeatTimer);
+  }
+
+  apiHeartbeatTimer = setInterval(() => {
+    void detectApiBase({ quiet: true, force: false });
+  }, 4000);
+
+  window.addEventListener("online", () => {
+    void detectApiBase({ quiet: false, force: true });
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      void detectApiBase({ quiet: true, force: false });
+    }
+  });
+}
+
+async function requestApiJson(path, options = {}, { quiet = false } = {}) {
+  let lastError = null;
+
+  for (const candidate of buildApiCandidates()) {
+    try {
+      const payload = await fetchJson(buildApiUrl(path, candidate), options);
+      setConnectionState(true, candidate, { quiet });
+      return payload;
+    } catch (error) {
+      lastError = error;
+      if (error && typeof error.status === "number" && error.status >= 400 && error.status < 500 && error.status !== 404) {
+        setConnectionState(true, candidate, { quiet: true });
+        throw error;
+      }
+    }
+  }
+
+  setConnectionState(false, fallbackApiOrigin, { quiet });
+  throw lastError || new Error("ローカルサーバーに接続できません。");
 }
 
 function updateBusyState() {
@@ -1016,7 +1090,9 @@ async function fetchJson(url, options = {}) {
 
   if (!response.ok) {
     const detail = (payload && payload.detail) || `HTTP ${response.status}`;
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
 
   return payload;
