@@ -1,5 +1,6 @@
 const storageKey = "ai-map-demo-state-v2";
 const defaultCenter = [35.681236, 139.767125];
+const fallbackApiOrigin = "http://127.0.0.1:8000";
 
 const defaultOrigin = {
   name: "東京駅",
@@ -39,6 +40,8 @@ const fallbackAppInfo = {
 
 const state = {
   appInfo: fallbackAppInfo,
+  apiBase: fallbackApiOrigin,
+  apiAvailable: false,
   activeTarget: "origin",
   origin: null,
   destination: null,
@@ -161,7 +164,8 @@ function wireEvents() {
 }
 
 async function initialize() {
-  setStatus("アプリ情報を読み込んでいます。", "info");
+  setStatus("API接続先を確認しています。", "info");
+  await detectApiBase();
   await loadAppInfo();
   restoreState();
 
@@ -192,8 +196,14 @@ async function initialize() {
 }
 
 async function loadAppInfo() {
+  if (!state.apiAvailable) {
+    state.appInfo = fallbackAppInfo;
+    renderAppInfo();
+    return;
+  }
+
   try {
-    state.appInfo = await fetchJson("/api/app-info");
+    state.appInfo = await fetchJson(buildApiUrl("/api/app-info"));
   } catch (error) {
     console.warn(error);
     state.appInfo = fallbackAppInfo;
@@ -285,6 +295,10 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
   input.value = searchText;
   setStatus(`${target === "origin" ? "出発地" : "目的地"}を検索しています。`, "info");
 
+  if (!ensureApiAvailable()) {
+    return;
+  }
+
   try {
     const params = new URLSearchParams({ q: searchText, limit: "6" });
     if (state.currentLocation) {
@@ -292,7 +306,9 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
       params.set("near_lon", String(state.currentLocation.lon));
     }
 
-    const data = await withBusy(() => fetchJson(`/api/places/search?${params.toString()}`));
+    const data = await withBusy(() =>
+      fetchJson(buildApiUrl(`/api/places/search?${params.toString()}`)),
+    );
     const items = data.items || [];
 
     if (!items.length) {
@@ -494,9 +510,21 @@ function schedulePreferencePreview(immediate = false) {
 }
 
 async function previewPreferences({ quiet = false } = {}) {
+  if (!state.apiAvailable) {
+    renderPreferenceTags({
+      profile: elements.profileSelect.value,
+      detected: [],
+      summary: "ローカルサーバー未接続",
+    });
+    if (!quiet) {
+      setStatus("要望解析には `パソコンサーバー/start.ps1` の起動が必要です。", "warning");
+    }
+    return;
+  }
+
   try {
     const data = await withBusy(() =>
-      fetchJson("/api/preferences/parse", {
+      fetchJson(buildApiUrl("/api/preferences/parse"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -538,11 +566,15 @@ async function requestRoute() {
     return;
   }
 
+  if (!ensureApiAvailable()) {
+    return;
+  }
+
   setStatus("ルートを作成しています。", "info");
 
   try {
     const route = await withBusy(() =>
-      fetchJson("/api/routes", {
+      fetchJson(buildApiUrl("/api/routes"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -910,6 +942,59 @@ async function withBusy(task) {
     state.busyCount = Math.max(0, state.busyCount - 1);
     updateBusyState();
   }
+}
+
+async function detectApiBase() {
+  const candidates = [];
+
+  if (location.protocol === "http:" || location.protocol === "https:") {
+    candidates.push(location.origin);
+  }
+  if (!candidates.includes(fallbackApiOrigin)) {
+    candidates.push(fallbackApiOrigin);
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(`${candidate}/api/health`);
+      if (response.ok) {
+        state.apiBase = candidate;
+        state.apiAvailable = true;
+
+        if (candidate === location.origin) {
+          setStatus("現在の表示元と同じサーバーに接続しました。", "success");
+        } else {
+          setStatus(`API接続先を ${candidate} に切り替えました。`, "success");
+        }
+        return;
+      }
+    } catch (error) {
+      console.warn(`API health check failed: ${candidate}`, error);
+    }
+  }
+
+  state.apiBase = fallbackApiOrigin;
+  state.apiAvailable = false;
+  setStatus(
+    "CSS/JS は読み込めています。API を使うには `パソコンサーバー/start.ps1` を起動してください。",
+    "warning",
+  );
+}
+
+function buildApiUrl(path) {
+  return `${state.apiBase}${path}`;
+}
+
+function ensureApiAvailable() {
+  if (state.apiAvailable) {
+    return true;
+  }
+
+  setStatus(
+    "ローカルサーバー未接続です。`パソコンサーバー/start.ps1` を起動してから再試行してください。",
+    "warning",
+  );
+  return false;
 }
 
 function updateBusyState() {
