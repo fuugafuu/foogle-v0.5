@@ -942,13 +942,24 @@ function buildApiCandidates() {
     candidates.push(candidate);
   };
 
-  pushCandidate(state.apiBase);
+  const isLocalPage =
+    location.protocol === "file:" ||
+    location.hostname === "localhost" ||
+    location.hostname === "127.0.0.1";
 
-  if (location.protocol === "http:" || location.protocol === "https:") {
+  const isLoopbackBase =
+    typeof state.apiBase === "string" &&
+    (state.apiBase.includes("127.0.0.1") || state.apiBase.includes("localhost"));
+
+  if (isLoopbackBase) {
+    pushCandidate(state.apiBase);
+  }
+
+  if (isLocalPage && (location.protocol === "http:" || location.protocol === "https:")) {
     pushCandidate(location.origin);
   }
 
-  if (location.hostname) {
+  if (isLocalPage && location.hostname) {
     pushCandidate(`http://${location.hostname}:8000`);
   }
 
