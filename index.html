@@ -30,6 +30,27 @@
 
           <p class="status-message info" id="status-message">初期化しています。</p>
 
+          <details class="api-config">
+            <summary>接続先</summary>
+            <div class="api-config-body">
+              <div class="api-config-row">
+                <input
+                  id="api-base-input"
+                  type="url"
+                  inputmode="url"
+                  placeholder="https://api.example.com または http://192.168.0.10:8000"
+                />
+                <button id="apply-api-button" type="button" class="secondary">適用</button>
+              </div>
+              <div class="api-config-actions">
+                <button id="clear-api-button" type="button" class="secondary">自動判定に戻す</button>
+              </div>
+              <p class="helper">
+                同じ Wi-Fi では PC の IP と 8000 番ポートを開きます。外出先や HTTPS 配信では公開された HTTPS API URL を使います。
+              </p>
+            </div>
+          </details>
+
           <div class="search-stack">
             <div class="search-block">
               <div class="search-label-row">

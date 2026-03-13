@@ -1,6 +1,7 @@
-const storageKey = "ai-map-demo-state-v2";
+const storageKey = "ai-map-demo-state-v3";
 const defaultCenter = [35.681236, 139.767125];
 const fallbackApiOrigin = "http://127.0.0.1:8000";
+const queryApiBase = new URLSearchParams(location.search).get("api");
 
 const defaultOrigin = {
   name: "東京駅",
@@ -22,8 +23,8 @@ const defaultDestination = {
 
 const fallbackAppInfo = {
   name: "AIルート生成型 地図システム",
-  version: "0.2.0",
-  engine: "demo",
+  version: "0.4.0",
+  engine: "osrm-fallback",
   engine_mode: "local-pc",
   supported_profiles: ["walk", "bicycle", "car"],
   sample_place_queries: ["東京駅", "皇居", "新宿駅", "大阪城", "近くのコンビニ"],
@@ -42,6 +43,7 @@ const state = {
   appInfo: fallbackAppInfo,
   apiBase: fallbackApiOrigin,
   apiAvailable: false,
+  customApiBase: "",
   activeTarget: "origin",
   origin: null,
   destination: null,
@@ -56,6 +58,9 @@ const state = {
 
 const elements = {
   connectionPill: document.getElementById("connection-pill"),
+  apiBaseInput: document.getElementById("api-base-input"),
+  applyApiButton: document.getElementById("apply-api-button"),
+  clearApiButton: document.getElementById("clear-api-button"),
   reconnectButton: document.getElementById("reconnect-button"),
   originInput: document.getElementById("origin-input"),
   destinationInput: document.getElementById("destination-input"),
@@ -117,6 +122,20 @@ initialize().catch((error) => {
 });
 
 function wireEvents() {
+  if (elements.applyApiButton) {
+    elements.applyApiButton.addEventListener("click", applyApiBaseFromInput);
+  }
+  if (elements.clearApiButton) {
+    elements.clearApiButton.addEventListener("click", clearCustomApiBase);
+  }
+  if (elements.apiBaseInput) {
+    elements.apiBaseInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyApiBaseFromInput();
+      }
+    });
+  }
   if (elements.reconnectButton) {
     elements.reconnectButton.addEventListener("click", () => void detectApiBase({ quiet: false, force: true }));
   }
@@ -170,12 +189,22 @@ function wireEvents() {
 }
 
 async function initialize() {
+  restoreState();
+  if (queryApiBase) {
+    try {
+      applyCustomApiBase(queryApiBase, { persist: true, reconnect: false, quiet: true });
+    } catch (error) {
+      console.warn(error);
+      syncApiBaseInput();
+    }
+  } else {
+    syncApiBaseInput();
+  }
+
   setStatus("API接続先を確認しています。", "info");
   await detectApiBase({ quiet: false, force: true });
   startConnectionMonitor();
   await loadAppInfo();
-  restoreState();
-
   if (!state.origin) {
     choosePlace("origin", defaultOrigin, { clearRoute: false, persist: false });
   }
@@ -876,6 +905,7 @@ function saveState() {
     profile: elements.profileSelect.value,
     preferences: elements.preferencesInput.value,
     activeTarget: state.activeTarget,
+    customApiBase: state.customApiBase,
   };
 
   localStorage.setItem(storageKey, JSON.stringify(payload));
@@ -895,6 +925,7 @@ function restoreState() {
 
     state.currentLocation = parsed.currentLocation || null;
     state.route = parsed.route || null;
+    state.customApiBase = normalizeApiBase(parsed.customApiBase || "");
     setActiveTarget(parsed.activeTarget === "destination" ? "destination" : "origin");
 
     elements.profileSelect.value = parsed.profile || "walk";
@@ -922,6 +953,123 @@ function restoreState() {
   }
 }
 
+function normalizeApiBase(value) {
+  const raw = (value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  let normalized = raw;
+  if (normalized === "same-origin") {
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      return location.origin;
+    }
+    return "";
+  }
+
+  if (normalized.startsWith("//")) {
+    normalized = `${location.protocol}${normalized}`;
+  }
+
+  try {
+    const url = new URL(normalized);
+    return `${url.protocol}//${url.host}`;
+  } catch (error) {
+    return "";
+  }
+}
+
+function isPrivateNetworkHost(hostname) {
+  if (!hostname) {
+    return false;
+  }
+
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname.endsWith(".local")) {
+    return true;
+  }
+
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+    return true;
+  }
+
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+    return true;
+  }
+
+  const private172 = hostname.match(/^172\.(\d{1,2})\.\d{1,3}\.\d{1,3}$/);
+  if (private172) {
+    const secondOctet = Number(private172[1]);
+    return secondOctet >= 16 && secondOctet <= 31;
+  }
+
+  return false;
+}
+
+function canUseApiBaseFromCurrentPage(base) {
+  if (!base) {
+    return false;
+  }
+
+  try {
+    const url = new URL(base);
+    if (location.protocol === "https:" && url.protocol !== "https:") {
+      return false;
+    }
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function syncApiBaseInput() {
+  if (!elements.apiBaseInput) {
+    return;
+  }
+
+  elements.apiBaseInput.value = state.customApiBase || "";
+}
+
+function applyCustomApiBase(value, { persist = true, reconnect = true, quiet = false } = {}) {
+  const normalized = normalizeApiBase(value);
+  if (value && !normalized) {
+    throw new Error("API URL の形式が正しくありません");
+  }
+  if (normalized && !canUseApiBaseFromCurrentPage(normalized)) {
+    throw new Error("HTTPS ページでは HTTPS の API URL を指定してください");
+  }
+
+  state.customApiBase = normalized;
+  syncApiBaseInput();
+
+  if (persist) {
+    saveState();
+  }
+
+  if (reconnect) {
+    void detectApiBase({ quiet, force: true });
+  }
+}
+
+function applyApiBaseFromInput() {
+  try {
+    applyCustomApiBase(elements.apiBaseInput.value, { persist: true, reconnect: true, quiet: false });
+    if (state.customApiBase) {
+      setStatus(`API 接続先を設定しました: ${state.customApiBase}`, "info");
+    }
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || "API 接続先の設定に失敗しました", "error");
+  }
+}
+
+function clearCustomApiBase() {
+  state.customApiBase = "";
+  syncApiBaseInput();
+  saveState();
+  setStatus("API 接続先を自動判定に戻しました", "info");
+  void detectApiBase({ quiet: false, force: true });
+}
+
 async function withBusy(task) {
   state.busyCount += 1;
   updateBusyState();
@@ -942,29 +1090,29 @@ function buildApiCandidates() {
     candidates.push(candidate);
   };
 
-  const isLocalPage =
-    location.protocol === "file:" ||
-    location.hostname === "localhost" ||
-    location.hostname === "127.0.0.1";
+  if (state.customApiBase) {
+    pushCandidate(state.customApiBase);
+  }
 
-  const isLoopbackBase =
-    typeof state.apiBase === "string" &&
-    (state.apiBase.includes("127.0.0.1") || state.apiBase.includes("localhost"));
-
-  if (isLoopbackBase) {
+  if (state.apiBase && canUseApiBaseFromCurrentPage(state.apiBase)) {
     pushCandidate(state.apiBase);
   }
 
-  if (isLocalPage && (location.protocol === "http:" || location.protocol === "https:")) {
+  const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
+  const isPrivatePage = isPrivateNetworkHost(location.hostname);
+
+  if (isHttpPage && (location.port === "8000" || isPrivatePage)) {
     pushCandidate(location.origin);
   }
 
-  if (isLocalPage && location.hostname) {
+  if (location.protocol !== "https:" && isPrivatePage && location.hostname) {
     pushCandidate(`http://${location.hostname}:8000`);
   }
 
-  pushCandidate("http://127.0.0.1:8000");
-  pushCandidate("http://localhost:8000");
+  if (location.protocol !== "https:") {
+    pushCandidate("http://127.0.0.1:8000");
+    pushCandidate("http://localhost:8000");
+  }
 
   return candidates;
 }
@@ -977,6 +1125,15 @@ function renderConnectionState() {
   if (!elements.connectionPill) {
     return;
   }
+
+  elements.connectionPill.className = `connection-pill ${state.apiAvailable ? "online" : "offline"}`;
+  if (state.apiAvailable) {
+    elements.connectionPill.textContent = `接続中 ${state.apiBase.replace(/^https?:\/\//, "")}`;
+    return;
+  }
+
+  elements.connectionPill.textContent = state.customApiBase ? "接続待ち" : "未接続";
+  return;
 
   elements.connectionPill.className = `connection-pill ${state.apiAvailable ? "online" : "offline"}`;
   elements.connectionPill.textContent = state.apiAvailable

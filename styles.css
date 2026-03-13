@@ -23,6 +23,7 @@ html,
 body {
   margin: 0;
   height: 100%;
+  min-height: 100dvh;
   overflow: hidden;
 }
 
@@ -42,6 +43,7 @@ select {
   position: relative;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
 }
 
 #map {
@@ -72,6 +74,7 @@ select {
   position: absolute;
   pointer-events: auto;
   z-index: 1001;
+  overscroll-behavior: contain;
 }
 
 .search-card {
@@ -201,6 +204,45 @@ h2 {
 .status-message.error {
   background: rgba(197, 34, 31, 0.1);
   color: var(--danger);
+}
+
+.api-config {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 18px;
+  background: rgba(244, 247, 251, 0.96);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.api-config summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  color: #374151;
+  list-style: none;
+}
+
+.api-config summary::-webkit-details-marker {
+  display: none;
+}
+
+.api-config-body {
+  margin-top: 10px;
+}
+
+.api-config-row,
+.api-config-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.api-config-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.api-config-actions {
+  grid-template-columns: 1fr;
+  margin-top: 8px;
 }
 
 .search-stack,
@@ -490,23 +532,28 @@ button.active-toggle {
 }
 
 @media (max-width: 720px) {
+  .map-ui {
+    padding-top: env(safe-area-inset-top);
+  }
+
   .search-card {
-    top: 10px;
-    left: 10px;
-    right: 10px;
+    top: 8px;
+    left: 8px;
+    right: 8px;
     width: auto;
-    max-height: 44vh;
-    border-radius: 22px;
+    max-height: min(48dvh, calc(100dvh - 16px - env(safe-area-inset-top)));
+    padding: 14px;
+    border-radius: 20px;
   }
 
   .route-sheet {
-    left: 0;
-    right: 0;
-    bottom: 0;
+    left: 8px;
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
     width: auto;
-    max-height: 56vh;
+    max-height: min(44dvh, 420px);
     padding: 14px 14px calc(18px + env(safe-area-inset-bottom));
-    border-radius: 24px 24px 0 0;
+    border-radius: 20px;
   }
 
   .sheet-handle {
@@ -540,13 +587,14 @@ button.active-toggle {
 
 @media (max-width: 460px) {
   .search-card {
-    max-height: 48vh;
+    max-height: min(52dvh, calc(100dvh - 16px - env(safe-area-inset-top)));
   }
 
   .search-row {
     grid-template-columns: 1fr;
   }
 
+  .api-config-row,
   .inline-actions,
   .toolbar-grid,
   .nav-button-row,
