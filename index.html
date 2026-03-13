@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AIルート生成型 地図システム</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="panel">
+          <p class="eyebrow">初期版 / ローカルPCサーバー</p>
+          <h1>AIルート生成型 地図システム</h1>
+          <p class="muted">
+            地点候補検索、要望解析、デモルート生成を先に固めたローカル版です。
+          </p>
+          <p class="warning" id="engine-warning">ルートエンジン: demo</p>
+          <p class="status-message info" id="status-message">初期化しています。</p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title-row">
+            <h2>クイック操作</h2>
+            <span class="mini-label">ブラウザ保存あり</span>
+          </div>
+          <div class="action-grid">
+            <button id="swap-button" type="button" class="secondary">入れ替え</button>
+            <button id="clear-route-button" type="button" class="secondary">ルート消去</button>
+            <button id="download-route-button" type="button" class="secondary">JSON保存</button>
+          </div>
+          <div class="action-grid">
+            <button id="pick-origin-button" type="button" class="secondary">
+              地図クリックで出発地
+            </button>
+            <button id="pick-destination-button" type="button" class="secondary">
+              地図クリックで目的地
+            </button>
+            <button id="stop-picking-button" type="button" class="secondary">
+              クリック選択終了
+            </button>
+          </div>
+          <p class="helper" id="map-pick-status">地図クリック選択はオフです。</p>
+          <div class="chip-section">
+            <span class="mini-label">クイック検索</span>
+            <div id="sample-place-chips" class="chip-group"></div>
+          </div>
+          <div class="chip-section">
+            <span class="mini-label">要望テンプレート</span>
+            <div id="sample-preference-chips" class="chip-group"></div>
+          </div>
+          <div class="chip-section">
+            <span class="mini-label">対応機能</span>
+            <div id="feature-chips" class="chip-group muted"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title-row">
+            <h2>出発地</h2>
+            <span class="mini-label" id="active-target-label">入力先: 出発地</span>
+          </div>
+          <div class="field-row">
+            <input id="origin-input" type="text" placeholder="例: 東京駅" />
+            <button id="origin-search-button" type="button" data-busy-button>検索</button>
+          </div>
+          <div class="field-row">
+            <button id="origin-current-button" type="button" class="secondary" data-busy-button>
+              現在地を使う
+            </button>
+          </div>
+          <div id="origin-results" class="results"></div>
+          <div id="origin-selected" class="selected"></div>
+        </div>
+
+        <div class="panel">
+          <h2>目的地</h2>
+          <div class="field-row">
+            <input id="destination-input" type="text" placeholder="例: 皇居" />
+            <button id="destination-search-button" type="button" data-busy-button>検索</button>
+          </div>
+          <div id="destination-results" class="results"></div>
+          <div id="destination-selected" class="selected"></div>
+        </div>
+
+        <div class="panel">
+          <h2>移動条件</h2>
+          <label class="label" for="profile-select">移動モード</label>
+          <select id="profile-select">
+            <option value="walk">徒歩</option>
+            <option value="bicycle">自転車</option>
+            <option value="car">車</option>
+          </select>
+
+          <label class="label" for="preferences-input">要望入力</label>
+          <textarea
+            id="preferences-input"
+            rows="4"
+            placeholder="例: 坂を避ける。信号が少ないルート"
+          ></textarea>
+
+          <div class="field-row">
+            <button id="parse-button" type="button" class="secondary" data-busy-button>要望解析</button>
+            <button id="route-button" type="button" data-busy-button>ルート作成</button>
+          </div>
+          <div id="preference-tags" class="tag-list"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title-row">
+            <h2>ルート概要</h2>
+            <span class="mini-label" id="route-summary-label">未生成</span>
+          </div>
+          <div id="route-highlights" class="tag-list"></div>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <span class="stat-label">距離</span>
+              <strong id="distance-value">-</strong>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">時間</span>
+              <strong id="duration-value">-</strong>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">高低差</span>
+              <strong id="elevation-value">-</strong>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">信号推定</span>
+              <strong id="traffic-value">-</strong>
+            </div>
+          </div>
+          <div class="stats-grid compact">
+            <div class="stat-card">
+              <span class="stat-label">最大勾配</span>
+              <strong id="max-gradient-value">-</strong>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">平均勾配</span>
+              <strong id="avg-gradient-value">-</strong>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">到着予測</span>
+              <strong id="arrival-value">-</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title-row">
+            <h2>案内</h2>
+            <span class="mini-label" id="navigation-progress">0 / 0</span>
+          </div>
+          <div id="nav-current" class="nav-current">
+            ルート作成後に案内を開始できます。
+          </div>
+          <div class="action-grid nav-actions">
+            <button id="start-nav-button" type="button" class="secondary">案内開始</button>
+            <button id="prev-step-button" type="button" class="secondary">前へ</button>
+            <button id="next-step-button" type="button" class="secondary">次へ</button>
+          </div>
+          <ol id="steps-list" class="steps-list"></ol>
+        </div>
+      </aside>
+
+      <main class="map-panel">
+        <div id="map"></div>
+      </main>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      crossorigin=""
+    ></script>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
