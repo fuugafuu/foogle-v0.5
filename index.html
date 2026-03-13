@@ -157,6 +157,25 @@
             <div id="feature-chips" class="chip-group muted"></div>
           </div>
 
+          <div class="assistant-panel">
+            <div class="search-label-row">
+              <span class="search-label">AIアシスタント</span>
+              <span class="mini-label" id="assistant-model-label">Ollama</span>
+            </div>
+            <div id="assistant-messages" class="assistant-messages"></div>
+            <div class="chip-section assistant-chip-section">
+              <div id="assistant-sample-chips" class="chip-group"></div>
+            </div>
+            <div class="assistant-compose">
+              <textarea
+                id="assistant-input"
+                rows="2"
+                placeholder="例: 現在地から渋谷駅まで、徒歩で坂を避けて案内して"
+              ></textarea>
+              <button id="assistant-send-button" type="button" data-busy-button>AIに依頼</button>
+            </div>
+          </div>
+
           <div id="route-highlights" class="tag-list"></div>
 
           <div class="stats-grid">

@@ -458,6 +458,82 @@ button.active-toggle {
   gap: 10px;
 }
 
+.assistant-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(244, 247, 251, 0.96);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.assistant-messages {
+  display: grid;
+  gap: 10px;
+  max-height: 220px;
+  margin-top: 12px;
+  overflow: auto;
+}
+
+.assistant-message {
+  padding: 12px;
+  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.assistant-message.user {
+  background: rgba(26, 115, 232, 0.12);
+  border-color: rgba(26, 115, 232, 0.18);
+}
+
+.assistant-message-role {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.assistant-message p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.assistant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.assistant-action {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: rgba(26, 115, 232, 0.1);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.assistant-compose {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.assistant-compose textarea {
+  min-height: 72px;
+}
+
+.assistant-chip-section {
+  margin-top: 10px;
+}
+
 .stat-card {
   padding: 14px;
   border-radius: 18px;
@@ -576,7 +652,8 @@ button.active-toggle {
   .inline-actions,
   .control-actions,
   .nav-button-row,
-  .toolbar-grid {
+  .toolbar-grid,
+  .assistant-compose {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -599,7 +676,8 @@ button.active-toggle {
   .toolbar-grid,
   .nav-button-row,
   .control-actions,
-  .stats-grid {
+  .stats-grid,
+  .assistant-compose {
     grid-template-columns: 1fr;
   }
 }

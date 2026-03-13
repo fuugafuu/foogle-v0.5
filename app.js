@@ -2,6 +2,11 @@ const storageKey = "ai-map-demo-state-v3";
 const defaultCenter = [35.681236, 139.767125];
 const fallbackApiOrigin = "http://127.0.0.1:8000";
 const queryApiBase = new URLSearchParams(location.search).get("api");
+const assistantPromptSamples = [
+  "現在地から渋谷駅まで徒歩で案内して",
+  "東京駅から新宿駅まで自転車で最短",
+  "大阪城まで車で有料道路を避けたい",
+];
 
 const defaultOrigin = {
   name: "東京駅",
@@ -23,7 +28,7 @@ const defaultDestination = {
 
 const fallbackAppInfo = {
   name: "AIルート生成型 地図システム",
-  version: "0.4.0",
+  version: "0.5.0",
   engine: "osrm-fallback",
   engine_mode: "local-pc",
   supported_profiles: ["walk", "bicycle", "car"],
@@ -50,6 +55,8 @@ const state = {
   route: null,
   currentLocation: null,
   parsedPreferences: null,
+  assistantMessages: [],
+  assistantModel: "Ollama",
   navigationStarted: false,
   navigationIndex: 0,
   mapPickMode: null,
@@ -70,6 +77,11 @@ const elements = {
   statusMessage: document.getElementById("status-message"),
   mapPickStatus: document.getElementById("map-pick-status"),
   activeTargetLabel: document.getElementById("active-target-label"),
+  assistantModelLabel: document.getElementById("assistant-model-label"),
+  assistantMessages: document.getElementById("assistant-messages"),
+  assistantInput: document.getElementById("assistant-input"),
+  assistantSendButton: document.getElementById("assistant-send-button"),
+  assistantSampleChips: document.getElementById("assistant-sample-chips"),
   preferenceTags: document.getElementById("preference-tags"),
   routeHighlights: document.getElementById("route-highlights"),
   routeSummaryLabel: document.getElementById("route-summary-label"),
@@ -153,6 +165,17 @@ function wireEvents() {
   document.getElementById("swap-button").addEventListener("click", swapPlaces);
   document.getElementById("clear-route-button").addEventListener("click", () => clearRoute());
   document.getElementById("download-route-button").addEventListener("click", downloadRoute);
+  if (elements.assistantSendButton) {
+    elements.assistantSendButton.addEventListener("click", () => void sendAssistantMessage());
+  }
+  if (elements.assistantInput) {
+    elements.assistantInput.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        void sendAssistantMessage();
+      }
+    });
+  }
 
   elements.startNavButton.addEventListener("click", toggleNavigation);
   elements.prevStepButton.addEventListener("click", previousStep);
@@ -229,6 +252,7 @@ async function initialize() {
   renderMapPickState();
   updateBusyState();
   renderConnectionState();
+  renderAssistantPanel();
   saveState();
 }
 
@@ -262,6 +286,7 @@ function renderAppInfo() {
 
   renderChipButtons(elements.samplePreferenceChips, state.appInfo.sample_preferences, applyPreferenceTemplate);
   renderStaticChips(elements.featureChips, state.appInfo.supported_features, "muted-chip");
+  renderAssistantPanel();
 }
 
 function renderChipButtons(container, values, onClick) {
@@ -284,6 +309,163 @@ function renderStaticChips(container, values, className = "") {
     span.textContent = value;
     container.append(span);
   });
+}
+
+function renderAssistantPanel() {
+  if (!elements.assistantMessages) {
+    return;
+  }
+
+  if (elements.assistantModelLabel) {
+    elements.assistantModelLabel.textContent = state.assistantModel || "Ollama";
+  }
+
+  if (elements.assistantSampleChips) {
+    renderChipButtons(elements.assistantSampleChips, assistantPromptSamples, (value) => {
+      elements.assistantInput.value = value;
+    });
+  }
+
+  const items = state.assistantMessages.length
+    ? state.assistantMessages
+    : [{ role: "assistant", text: "地図の相談をどうぞ。地点検索、条件整理、ルート作成をまとめて実行します。", actions: [] }];
+
+  elements.assistantMessages.innerHTML = "";
+  items.forEach((item) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = `assistant-message ${item.role || "assistant"}`;
+
+    const role = document.createElement("span");
+    role.className = "assistant-message-role";
+    role.textContent = item.role === "user" ? "You" : "AI";
+    wrapper.append(role);
+
+    const text = document.createElement("p");
+    text.textContent = item.text || "";
+    wrapper.append(text);
+
+    if (Array.isArray(item.actions) && item.actions.length) {
+      const actions = document.createElement("div");
+      actions.className = "assistant-actions";
+      item.actions.forEach((action) => {
+        const chip = document.createElement("span");
+        chip.className = "assistant-action";
+        chip.textContent = action;
+        actions.append(chip);
+      });
+      wrapper.append(actions);
+    }
+
+    elements.assistantMessages.append(wrapper);
+  });
+
+  elements.assistantMessages.scrollTop = elements.assistantMessages.scrollHeight;
+}
+
+function pushAssistantMessage(role, text, actions = []) {
+  state.assistantMessages.push({
+    role,
+    text,
+    actions,
+    createdAt: new Date().toISOString(),
+  });
+  state.assistantMessages = state.assistantMessages.slice(-12);
+  renderAssistantPanel();
+  saveState();
+}
+
+function buildAssistantContext() {
+  return {
+    origin: state.origin,
+    destination: state.destination,
+    current_location: state.currentLocation
+      ? {
+          lat: state.currentLocation.lat,
+          lon: state.currentLocation.lon,
+        }
+      : null,
+    profile: elements.profileSelect.value,
+    preferences_text: elements.preferencesInput.value.trim(),
+    route_ready: Boolean(state.route),
+  };
+}
+
+async function applyAssistantResponse(response) {
+  state.assistantModel = response.model || (response.available === false ? "Ollama fallback" : "Ollama");
+
+  if (response.origin) {
+    elements.originInput.value = response.origin.name;
+    choosePlace("origin", response.origin, { clearRoute: false, persist: false, fitMap: false });
+  }
+
+  if (response.destination) {
+    elements.destinationInput.value = response.destination.name;
+    choosePlace("destination", response.destination, { clearRoute: false, persist: false, fitMap: false });
+  }
+
+  if (response.profile) {
+    elements.profileSelect.value = response.profile;
+  }
+
+  if (typeof response.preferences_text === "string") {
+    elements.preferencesInput.value = response.preferences_text;
+  }
+
+  await previewPreferences({ quiet: true });
+
+  if (response.clear_route && !response.route) {
+    clearRoute({ keepStatus: true, persist: false });
+  }
+
+  if (response.route) {
+    applyRoute(response.route, {
+      persist: false,
+      statusText: "AIがルートを更新しました。",
+    });
+  } else {
+    saveState();
+  }
+
+  pushAssistantMessage("assistant", response.reply, response.actions || []);
+  setStatus(
+    response.reply,
+    response.available === false ? "warning" : response.route ? "success" : "info",
+  );
+}
+
+async function sendAssistantMessage(prefilledMessage = null) {
+  const rawMessage =
+    prefilledMessage !== null && prefilledMessage !== undefined
+      ? prefilledMessage
+      : elements.assistantInput.value || "";
+  const message = rawMessage.trim();
+  if (!message) {
+    setStatus("AI に依頼する内容を入力してください。", "warning");
+    return;
+  }
+
+  pushAssistantMessage("user", message);
+  elements.assistantInput.value = "";
+  setStatus("AI が条件を整理しています。", "info");
+
+  try {
+    const response = await withBusy(() =>
+      requestApiJson("/api/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          context: buildAssistantContext(),
+        }),
+      }),
+    );
+
+    await applyAssistantResponse(response);
+  } catch (error) {
+    console.error(error);
+    pushAssistantMessage("assistant", error.message || "AI アシスタントの実行に失敗しました。", []);
+    setStatus(error.message || "AI アシスタントの実行に失敗しました。", "error");
+  }
 }
 
 function applyPreferenceTemplate(value) {
@@ -906,6 +1088,8 @@ function saveState() {
     preferences: elements.preferencesInput.value,
     activeTarget: state.activeTarget,
     customApiBase: state.customApiBase,
+    assistantMessages: state.assistantMessages,
+    assistantModel: state.assistantModel,
   };
 
   localStorage.setItem(storageKey, JSON.stringify(payload));
@@ -926,6 +1110,8 @@ function restoreState() {
     state.currentLocation = parsed.currentLocation || null;
     state.route = parsed.route || null;
     state.customApiBase = normalizeApiBase(parsed.customApiBase || "");
+    state.assistantMessages = Array.isArray(parsed.assistantMessages) ? parsed.assistantMessages.slice(-12) : [];
+    state.assistantModel = parsed.assistantModel || "Ollama";
     setActiveTarget(parsed.activeTarget === "destination" ? "destination" : "origin");
 
     elements.profileSelect.value = parsed.profile || "walk";
@@ -1139,6 +1325,19 @@ function renderConnectionState() {
   elements.connectionPill.textContent = state.apiAvailable
     ? `接続中 ${state.apiBase.replace("http://", "")}`
     : "サーバー待機中";
+}
+
+function renderConnectionState() {
+  if (!elements.connectionPill) {
+    return;
+  }
+
+  elements.connectionPill.className = `connection-pill ${state.apiAvailable ? "online" : "offline"}`;
+  if (state.apiAvailable) {
+    elements.connectionPill.textContent = `接続中 ${state.apiBase.replace(/^https?:\/\//, "")}`;
+  } else {
+    elements.connectionPill.textContent = state.customApiBase ? "接続待ち" : "未接続";
+  }
 }
 
 function setConnectionState(isAvailable, base = state.apiBase, { quiet = false } = {}) {
