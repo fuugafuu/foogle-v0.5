@@ -1287,7 +1287,7 @@ function buildApiCandidates() {
   const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
   const isPrivatePage = isPrivateNetworkHost(location.hostname);
 
-  if (isHttpPage && (location.port === "8000" || isPrivatePage)) {
+  if (isHttpPage) {
     pushCandidate(location.origin);
   }
 
@@ -1307,7 +1307,7 @@ function buildApiUrl(path, base = state.apiBase) {
   return `${base}${path}`;
 }
 
-function renderConnectionState() {
+function legacyRenderConnectionState() {
   if (!elements.connectionPill) {
     return;
   }
