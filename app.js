@@ -1,4 +1,4 @@
-const storageKey = "ai-map-demo-state-v4";
+﻿const storageKey = "ai-map-demo-state-v4";
 const defaultCenter = [35.681236, 139.767125];
 const fallbackApiOrigin = "http://127.0.0.1:8000";
 const healthcheckIntervalMs = 6000;
@@ -61,6 +61,7 @@ const state = {
   origin: null,
   destination: null,
   route: null,
+  routeWaypoints: [],
   currentLocation: null,
   networkInfo: null,
   parsedPreferences: null,
@@ -81,6 +82,7 @@ const state = {
   captureMode: "local",
   capturePerspective: "car_front",
   captureSession: null,
+  pendingContributionZipFile: null,
   globalSearchResults: [],
 };
 
@@ -140,6 +142,8 @@ const elements = {
   maxGradientValue: document.getElementById("max-gradient-value"),
   avgGradientValue: document.getElementById("avg-gradient-value"),
   arrivalValue: document.getElementById("arrival-value"),
+  costValue: document.getElementById("cost-value"),
+  ferryValue: document.getElementById("ferry-value"),
   originResults: document.getElementById("origin-results"),
   destinationResults: document.getElementById("destination-results"),
   originSelected: document.getElementById("origin-selected"),
@@ -170,6 +174,10 @@ const elements = {
   contributionLog: document.getElementById("contribution-log"),
   contributionStartButton: document.getElementById("contribution-start-button"),
   contributionStopButton: document.getElementById("contribution-stop-button"),
+  contributionZipInput: document.getElementById("contribution-zip-input"),
+  contributionSelectZipButton: document.getElementById("contribution-select-zip-button"),
+  contributionUploadZipButton: document.getElementById("contribution-upload-zip-button"),
+  contributionZipStatus: document.getElementById("contribution-zip-status"),
   placeActionSheet: document.getElementById("place-action-sheet"),
   placeActionBackdrop: document.getElementById("place-action-backdrop"),
   placeActionName: document.getElementById("place-action-name"),
@@ -3361,3 +3369,1067 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 }
+
+function renderConnectionState() {
+  if (!elements.connectionPill) {
+    return;
+  }
+  elements.connectionPill.className = `connection-pill ${state.apiAvailable ? "online" : "offline"}`;
+  if (state.apiAvailable) {
+    elements.connectionPill.textContent = `接続中 ${state.apiBase.replace(/^https?:\/\//, "")}`;
+  } else {
+    elements.connectionPill.textContent = state.customApiBase ? "接続待ち" : "未接続";
+  }
+}
+
+function renderPreferenceTags(parsed) {
+  elements.preferenceTags.innerHTML = "";
+  const tags = [`モード: ${profileLabel(parsed.profile)}`];
+  if (parsed.detected && parsed.detected.length) {
+    tags.push(...parsed.detected.map((tag) => tag.label));
+  } else if (parsed.summary) {
+    tags.push(parsed.summary);
+  }
+  renderStaticChips(elements.preferenceTags, tags);
+}
+
+function renderFollowLocationButtons() {
+  [elements.followLocationButton, elements.followLocationButtonDuplicate].filter(Boolean).forEach((button) => {
+    button.textContent = state.followCurrentLocation ? "追尾 ON" : "追尾 OFF";
+    button.classList.toggle("active-toggle", state.followCurrentLocation);
+  });
+}
+
+function setFollowCurrentLocation(value, { persist = true, status = false } = {}) {
+  state.followCurrentLocation = Boolean(value);
+  renderFollowLocationButtons();
+  if (state.followCurrentLocation) {
+    followCurrentLocationOnMap({ force: true });
+  }
+  if (persist) {
+    saveState();
+  }
+  if (status) {
+    setStatus(state.followCurrentLocation ? "現在地の追尾を有効にしました。" : "現在地の追尾を停止しました。", "info");
+  }
+}
+
+function renderContributionStatus(message, kind = "info", logText = "") {
+  if (elements.contributionStatus) {
+    elements.contributionStatus.textContent = message;
+    elements.contributionStatus.className = `status-message ${kind}`;
+  }
+  if (elements.contributionLog && logText) {
+    elements.contributionLog.textContent = logText;
+  }
+}
+
+function renderContributionModeButtons() {
+  if (elements.contributionModeLocal) elements.contributionModeLocal.classList.toggle("active-toggle", state.captureMode === "local");
+  if (elements.contributionModeServer) elements.contributionModeServer.classList.toggle("active-toggle", state.captureMode === "server");
+  if (elements.contributionStartButton) elements.contributionStartButton.disabled = Boolean(state.captureSession);
+  if (elements.contributionStopButton) elements.contributionStopButton.disabled = !state.captureSession;
+  if (elements.contributionUploadZipButton) elements.contributionUploadZipButton.disabled = !state.pendingContributionZipFile || !state.apiAvailable;
+  renderContributionPerspectiveButtons();
+}
+
+function renderContributionPerspectiveButtons() {
+  if (elements.contributionPerspectiveDrive) {
+    elements.contributionPerspectiveDrive.classList.toggle("active-toggle", state.capturePerspective === "car_front");
+    elements.contributionPerspectiveDrive.disabled = Boolean(state.captureSession);
+  }
+  if (elements.contributionPerspectiveWalk) {
+    elements.contributionPerspectiveWalk.classList.toggle("active-toggle", state.capturePerspective === "walk");
+    elements.contributionPerspectiveWalk.disabled = Boolean(state.captureSession);
+  }
+}
+
+function renderContributionOverlay(items = [], { statusText = "" } = {}) {
+  if (elements.contributionPreviewShell) {
+    elements.contributionPreviewShell.classList.toggle("is-detecting", items.length > 0);
+  }
+  if (elements.contributionOverlayStatus) {
+    elements.contributionOverlayStatus.textContent = statusText || (items.length ? `認識中: ${items.length}種類` : "認識待機中");
+  }
+  if (!elements.contributionOverlayTags) {
+    return;
+  }
+  elements.contributionOverlayTags.innerHTML = "";
+  items.forEach((item) => {
+    const chip = document.createElement("span");
+    chip.className = "overlay-tag";
+    chip.textContent = typeof item.count === "number" && item.count > 1 ? `${item.label} ×${item.count}` : item.label;
+    elements.contributionOverlayTags.append(chip);
+  });
+}
+
+function clearContributionOverlay() {
+  renderContributionOverlay([], {
+    statusText: state.capturePerspective === "walk" ? "徒歩モード / 認識待機中" : "車前方モード / 認識待機中",
+  });
+}
+
+function summarizeContributionDetections(relevant) {
+  const labelMap = {
+    car: "車",
+    truck: "トラック",
+    bus: "バス",
+    "traffic light": "信号",
+    motorcycle: "バイク",
+    bicycle: "自転車",
+    "stop sign": "停止標識",
+    person: "歩行者",
+  };
+  const counts = new Map();
+  relevant.forEach((item) => {
+    const label = labelMap[item.class] || item.class;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  });
+  return Array.from(counts.entries()).map(([label, count]) => ({ label, count }));
+}
+
+function renderSummary(summary) {
+  const distanceText = summary && typeof summary.distance_km === "number" ? `${summary.distance_km.toFixed(2)} km` : "-";
+  const durationText = summary && typeof summary.duration_min === "number" ? `${summary.duration_min} 分` : "-";
+  elements.routeSummaryLabel.textContent = `${distanceText} / ${durationText}`;
+  elements.distanceValue.textContent = distanceText;
+  elements.durationValue.textContent = durationText;
+  elements.elevationValue.textContent = summary ? `${summary.elevation_gain_m} m` : "-";
+  elements.trafficValue.textContent = summary ? `${summary.traffic_lights_estimate} 箇所` : "-";
+  elements.maxGradientValue.textContent = summary ? `${summary.max_gradient_percent} %` : "-";
+  elements.avgGradientValue.textContent = summary ? `${summary.average_gradient_percent} %` : "-";
+  elements.arrivalValue.textContent = summary ? summary.estimated_arrival : "-";
+  if (elements.costValue) {
+    elements.costValue.textContent =
+      summary && typeof summary.estimated_cost_yen === "number" ? `約${summary.estimated_cost_yen.toLocaleString("ja-JP")}円` : "約0円";
+  }
+  if (elements.ferryValue) {
+    elements.ferryValue.textContent = summary && summary.includes_ferry ? `${summary.ferry_segments || 1} 区間` : "なし";
+  }
+}
+
+function resetRouteOutput() {
+  if (routeLayer) {
+    routeLayer.remove();
+    routeLayer = null;
+  }
+
+  state.route = null;
+  state.routeWaypoints = [];
+  state.navigationStarted = false;
+  state.navigationIndex = 0;
+  elements.engineWarning.textContent = `ルートエンジン: ${state.appInfo.engine} / バージョン ${state.appInfo.version}`;
+  elements.routeSummaryLabel.textContent = "未生成";
+  elements.distanceValue.textContent = "-";
+  elements.durationValue.textContent = "-";
+  elements.elevationValue.textContent = "-";
+  elements.trafficValue.textContent = "-";
+  elements.maxGradientValue.textContent = "-";
+  elements.avgGradientValue.textContent = "-";
+  elements.arrivalValue.textContent = "-";
+  if (elements.costValue) elements.costValue.textContent = "-";
+  if (elements.ferryValue) elements.ferryValue.textContent = "-";
+  elements.routeHighlights.innerHTML = "";
+  elements.stepsList.innerHTML = "";
+  renderNavigation();
+}
+
+async function requestRoute() {
+  if (!state.origin || !state.destination) {
+    switchPanel("search", { expand: true, persist: false });
+    setStatus("出発地と目的地の両方を選んでください。", "warning");
+    throw new Error("Origin and destination are required.");
+  }
+
+  switchPanel("route", { expand: true, persist: false });
+  setStatus("ルートを作成しています...", "info");
+
+  try {
+    const route = await withBusy(() =>
+      requestApiJson(
+        "/api/routes",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            origin: state.origin,
+            destination: state.destination,
+            waypoints: Array.isArray(state.routeWaypoints) ? state.routeWaypoints : [],
+            profile: elements.profileSelect.value,
+            preferences_text: elements.preferencesInput.value.trim(),
+          }),
+        },
+        { timeoutMs: 30000 },
+      ),
+    );
+    applyRoute(route);
+    return route;
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || "ルート生成に失敗しました。", "error");
+    throw error;
+  }
+}
+
+function applyRoute(route, options = {}) {
+  const settings = { persist: true, statusText: "ルートを更新しました。", ...options };
+  state.route = route;
+  state.routeWaypoints = Array.isArray(route.waypoints) ? route.waypoints : [];
+  state.navigationStarted = false;
+  state.navigationIndex = 0;
+
+  elements.engineWarning.textContent = `ルートエンジン: ${route.engine} / ${route.warning || "道路に沿って案内"}`;
+  renderPreferenceTags(route.parsed_preferences);
+  renderStaticChips(elements.routeHighlights, route.highlights || ["ルート準備完了"]);
+  renderSummary(route.summary);
+  renderSteps(route.steps || []);
+  renderNavigation();
+
+  if (routeLayer) routeLayer.remove();
+  const latLngs = (route.path || []).map((point) => [point.lat, point.lon]);
+  routeLayer = L.polyline(latLngs, { color: "#3b82f6", weight: 6, opacity: 0.9 }).addTo(map);
+  fitToVisibleLayers();
+  switchPanel("route", { expand: true, persist: false });
+  if (state.currentLocation && state.followCurrentLocation) {
+    followCurrentLocationOnMap({ force: true });
+  }
+  if (settings.persist) saveState();
+  setStatus(settings.statusText, "success");
+}
+
+function clearRoute(options = {}) {
+  const settings = { keepStatus: false, persist: true, ...options };
+  resetRouteOutput();
+  if (settings.persist) {
+    saveState();
+  }
+  if (!settings.keepStatus) {
+    switchPanel("search", { expand: !isSmallViewport(), persist: false });
+    setStatus("ルートを解除しました。", "info");
+  }
+}
+
+function renderNavigation() {
+  const steps = (state.route && state.route.steps) || [];
+  const hasRoute = steps.length > 0;
+
+  elements.startNavButton.disabled = !hasRoute;
+  elements.startNavButton.textContent = state.navigationStarted ? "案内停止" : "案内開始";
+
+  if (!hasRoute) {
+    elements.prevStepButton.disabled = true;
+    elements.nextStepButton.disabled = true;
+    elements.navigationProgress.textContent = "0 / 0";
+    elements.navCurrent.textContent = "ルート生成後に案内を表示します。";
+    return;
+  }
+
+  const currentIndex = state.navigationStarted ? state.navigationIndex : 0;
+  const currentStep = steps[currentIndex];
+  const remainingDistance = steps
+    .slice(currentIndex)
+    .reduce((sum, step) => sum + Number(step.distance_km || 0), 0)
+    .toFixed(2);
+
+  elements.prevStepButton.disabled = currentIndex <= 0;
+  elements.nextStepButton.disabled = currentIndex >= steps.length - 1;
+  elements.navigationProgress.textContent = `${currentIndex + 1} / ${steps.length}`;
+  elements.navCurrent.innerHTML = `
+    <strong>${state.navigationStarted ? "現在の案内" : "先頭ステップ"}</strong>
+    <span>${escapeHtml(currentStep.instruction)}</span>
+    <small>残りの道のり ${remainingDistance} km</small>
+  `;
+
+  Array.from(elements.stepsList.children).forEach((item, index) => {
+    item.classList.toggle("active", state.navigationStarted && index === currentIndex);
+  });
+}
+
+function toggleNavigation() {
+  if (!state.route || !state.route.steps || !state.route.steps.length) {
+    setStatus("案内できるルートがありません。", "warning");
+    return;
+  }
+
+  state.navigationStarted = !state.navigationStarted;
+  if (state.navigationStarted && state.navigationIndex >= state.route.steps.length) {
+    state.navigationIndex = 0;
+  }
+  if (state.navigationStarted) {
+    setFollowCurrentLocation(true, { persist: false, status: false });
+    followCurrentLocationOnMap({ force: true });
+  }
+
+  renderNavigation();
+  saveState();
+  setStatus(state.navigationStarted ? "案内を開始しました。" : "案内を停止しました。", state.navigationStarted ? "success" : "info");
+}
+
+async function applyAssistantResponse(response) {
+  state.assistantModel = response.model || (response.available === false ? "Ollama fallback" : "Ollama");
+
+  if (response.origin) {
+    elements.originInput.value = response.origin.name;
+    choosePlace("origin", response.origin, { clearRoute: false, persist: false, fitMap: false });
+  }
+  if (response.destination) {
+    elements.destinationInput.value = response.destination.name;
+    choosePlace("destination", response.destination, { clearRoute: false, persist: false, fitMap: false });
+  }
+  state.routeWaypoints = Array.isArray(response.waypoints) ? response.waypoints : [];
+
+  if (response.profile) {
+    elements.profileSelect.value = response.profile;
+  }
+  if (typeof response.preferences_text === "string") {
+    elements.preferencesInput.value = response.preferences_text;
+  }
+
+  await previewPreferences({ quiet: true });
+
+  if (response.clear_route && !response.route) {
+    clearRoute({ keepStatus: true, persist: false });
+  }
+
+  if (response.route) {
+    applyRoute(response.route, {
+      persist: false,
+      statusText: "AI がルートを更新しました。",
+    });
+    switchPanel("route", { expand: true, persist: false });
+  } else {
+    saveState();
+  }
+
+  pushAssistantMessage("assistant", response.reply, response.actions || []);
+  setStatus(response.reply, response.available === false ? "warning" : response.route ? "success" : "info");
+}
+
+async function sendAssistantMessage(prefilledMessage = null) {
+  const rawMessage = prefilledMessage !== null && prefilledMessage !== undefined ? prefilledMessage : elements.assistantInput.value || "";
+  const message = rawMessage.trim();
+  if (!message) {
+    setStatus("AI に送るメッセージを入力してください。", "warning");
+    return;
+  }
+
+  pushAssistantMessage("user", message);
+  elements.assistantInput.value = "";
+  focusPanel("ai");
+  setStatus("AI に問い合わせています...", "info");
+
+  try {
+    const response = await withBusy(() =>
+      requestApiJson(
+        "/api/assistant",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, context: buildAssistantContext() }),
+        },
+        { timeoutMs: assistantRequestTimeoutMs },
+      ),
+    );
+    await applyAssistantResponse(response);
+  } catch (error) {
+    console.error(error);
+    const isTimeout = Boolean(error && (error.isTimeout || error.name === "AbortError" || /timeout|timed out|aborted/i.test(error.message || "")));
+    const reply = isTimeout
+      ? "AI の返答が長引いたため、いったん中断しました。少し短い文で送り直してください。"
+      : error.message || "AI への送信に失敗しました。";
+    pushAssistantMessage("assistant", reply, []);
+    setStatus(reply, isTimeout ? "warning" : "error");
+  }
+}
+
+function applyPreferenceTemplate(value) {
+  const current = elements.preferencesInput.value.trim();
+  if (!current) {
+    elements.preferencesInput.value = value;
+  } else if (!current.includes(value)) {
+    elements.preferencesInput.value = `${current} / ${value}`;
+  }
+  schedulePreferencePreview(true);
+  saveState();
+  setStatus(`条件に「${value}」を追加しました。`, "success");
+}
+
+function setActiveTarget(target) {
+  state.activeTarget = target;
+  elements.activeTargetLabel.textContent = `入力先: ${target === "origin" ? "出発地" : "目的地"}`;
+  syncMobileSearchInput();
+}
+
+async function searchPlaces(target, { query = null, autoSelectFirst = false } = {}) {
+  setActiveTarget(target);
+  switchPanel("search", { expand: true, persist: false });
+  const input = inputForTarget(target);
+  const typedValue =
+    query !== null && query !== undefined
+      ? query
+      : isSmallViewport() && elements.mobileSearchInput
+        ? elements.mobileSearchInput.value
+        : input.value;
+  const searchText = typedValue.trim();
+
+  if (!searchText) {
+    setStatus("検索語を入力してください。", "warning");
+    return;
+  }
+
+  input.value = searchText;
+  syncMobileSearchInput();
+  setStatus(`${target === "origin" ? "出発地" : "目的地"}を検索しています...`, "info");
+
+  try {
+    const params = new URLSearchParams({ q: searchText, limit: "8" });
+    if (state.currentLocation) {
+      params.set("near_lat", String(state.currentLocation.lat));
+      params.set("near_lon", String(state.currentLocation.lon));
+    }
+
+    const data = await withBusy(() => requestApiJson(`/api/places/search?${params.toString()}`));
+    const items = data.items || [];
+
+    if (!items.length) {
+      renderResults(target, []);
+      switchPanel("search", { expand: true, persist: false });
+      setStatus("候補が見つかりませんでした。", "warning");
+      return;
+    }
+
+    renderResults(target, items);
+    switchPanel("search", { expand: true, persist: false });
+
+    if (autoSelectFirst) {
+      choosePlace(target, items[0]);
+      clearResults(target);
+      setStatus(`${target === "origin" ? "出発地" : "目的地"}を更新しました。`, "success");
+      return;
+    }
+
+    setStatus(`${items.length} 件の候補を表示しました。`, "success");
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || "検索に失敗しました。", "error");
+  }
+}
+
+function renderResults(target, items) {
+  const container = resultsForTarget(target);
+  container.innerHTML = "";
+
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "result-empty";
+    empty.textContent = "候補がありません。";
+    container.append(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "result-item";
+    button.innerHTML = `
+      <strong>${escapeHtml(item.name)}</strong>
+      <span>${escapeHtml(item.description || item.category || "")}</span>
+      <small class="result-meta">${escapeHtml(buildPlaceMeta(item))}</small>
+    `;
+    button.addEventListener("click", () => {
+      choosePlace(target, item);
+      clearResults(target);
+      openPlaceActionSheet(item);
+    });
+    container.append(button);
+  });
+}
+
+async function refreshFavorites({ quiet = false } = {}) {
+  ensureClientId();
+  if (!state.apiAvailable) {
+    state.favorites = [];
+    renderFavorites();
+    return;
+  }
+  try {
+    const payload = await requestApiJson(`/api/favorites?client_id=${encodeURIComponent(state.clientId)}`, {}, { quiet, timeoutMs: 10000 });
+    state.favorites = payload.items || [];
+    renderFavorites();
+  } catch (error) {
+    console.warn(error);
+    if (!quiet) {
+      setStatus(error.message || "お気に入りの取得に失敗しました。", "error");
+    }
+  }
+}
+
+function renderFavorites() {
+  renderFavoriteCount();
+  if (!elements.favoritesList) return;
+  elements.favoritesList.innerHTML = "";
+
+  if (!state.favorites.length) {
+    const empty = document.createElement("p");
+    empty.className = "result-empty";
+    empty.textContent = "お気に入りはまだありません。";
+    elements.favoritesList.append(empty);
+    return;
+  }
+
+  state.favorites.forEach((favorite) => {
+    const row = document.createElement("div");
+    row.className = "selected-card";
+    row.innerHTML = `<strong>${escapeHtml((favorite.label || (favorite.place && favorite.place.name) || "Favorite"))}</strong><span>${escapeHtml((favorite.place && (favorite.place.description || favorite.place.category)) || "")}</span><small class="result-meta">${favorite.ip_match ? "IP一致" : "IP差分あり"}</small>`;
+    const actions = document.createElement("div");
+    actions.className = "assistant-actions";
+
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "secondary compact-button";
+    openButton.textContent = "開く";
+    openButton.addEventListener("click", () => openPlaceActionSheet(favorite.place));
+    actions.append(openButton);
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "secondary compact-button";
+    deleteButton.textContent = "削除";
+    deleteButton.addEventListener("click", async () => {
+      try {
+        await requestApiJson(`/api/favorites/${encodeURIComponent(favorite.id)}?client_id=${encodeURIComponent(state.clientId)}`, { method: "DELETE" }, { timeoutMs: 10000 });
+        await refreshFavorites({ quiet: true });
+      } catch (error) {
+        setStatus(error.message || "お気に入りの削除に失敗しました。", "error");
+      }
+    });
+    actions.append(deleteButton);
+
+    row.append(actions);
+    elements.favoritesList.append(row);
+  });
+}
+
+async function saveFavoritePlace(place) {
+  ensureClientId();
+  if (!state.apiAvailable) {
+    setStatus("お気に入り保存には API 接続が必要です。", "warning");
+    return;
+  }
+  try {
+    const normalizedPlace = normalizePlace(place);
+    const response = await requestApiJson(
+      "/api/favorites",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: state.clientId, place: normalizedPlace, label: normalizedPlace.name }),
+      },
+      { timeoutMs: 10000 },
+    );
+    state.favorites = response.items || [];
+    renderFavorites();
+    closePlaceActionSheet();
+    setStatus("お気に入りに保存しました。", "success");
+  } catch (error) {
+    setStatus(error.message || "お気に入りの保存に失敗しました。", "error");
+  }
+}
+
+function handleGoogleLoginClick() {
+  if (elements.googleLoginStatus) {
+    elements.googleLoginStatus.textContent = "未接続";
+  }
+  setStatus("Google ログイン本体はまだ未接続です。OAuth 用のクライアント ID と公開 URL が必要です。", "info");
+}
+
+function buildContributionMetadata(session) {
+  return {
+    client_id: state.clientId,
+    mode: state.captureMode,
+    capture_perspective: state.capturePerspective,
+    started_at: session.startedAt,
+    stopped_at: new Date().toISOString(),
+    notes: session.notes || "",
+    route: state.route ? { summary: state.route.summary, highlights: state.route.highlights, waypoints: state.routeWaypoints || [] } : null,
+    current_location: state.currentLocation,
+    detection_note: "road_width_estimate_m is not implemented yet, so it is null.",
+  };
+}
+
+async function buildContributionArchive(session) {
+  const JSZip = await ensureJSZipLib();
+  const zip = new JSZip();
+  const metadata = buildContributionMetadata(session);
+  zip.file("metadata.json", JSON.stringify(metadata, null, 2));
+  zip.file("positions.json", JSON.stringify(session.positions, null, 2));
+  zip.file("orientation.json", JSON.stringify(session.orientations, null, 2));
+  zip.file("detections.json", JSON.stringify(session.detections, null, 2));
+  if (session.videoBlob) {
+    zip.file("video.webm", session.videoBlob);
+  }
+  return zip.generateAsync({ type: "blob" });
+}
+
+async function createContributionServerSession(session) {
+  const response = await requestApiJson(
+    "/api/contributions/session/start",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: state.clientId,
+        mode: "server",
+        metadata: buildContributionMetadata(session),
+      }),
+    },
+    { timeoutMs: contributionUploadTimeoutMs },
+  );
+  session.serverSessionId = response.session_id;
+  session.serverUploadQueue = Promise.resolve();
+  session.serverChunkIndex = 0;
+  session.serverUploadError = null;
+  return response;
+}
+
+function queueContributionChunkUpload(session, blob) {
+  if (!session.serverSessionId) {
+    return Promise.resolve();
+  }
+  const chunkIndex = session.serverChunkIndex++;
+  session.serverUploadQueue = session.serverUploadQueue.then(async () => {
+    const formData = new FormData();
+    formData.append("client_id", state.clientId);
+    formData.append("chunk_index", String(chunkIndex));
+    formData.append("file", blob, `chunk-${chunkIndex}.webm`);
+    try {
+      await requestApiJson(
+        `/api/contributions/session/${encodeURIComponent(session.serverSessionId)}/chunk`,
+        { method: "POST", body: formData },
+        { timeoutMs: contributionUploadTimeoutMs, quiet: true },
+      );
+    } catch (error) {
+      session.serverUploadError = error;
+      appendContributionLog(`チャンク ${chunkIndex} の送信に失敗: ${error.message || error}`);
+      throw error;
+    }
+  });
+  return session.serverUploadQueue;
+}
+
+function updateContributionZipStatus(message) {
+  if (elements.contributionZipStatus) {
+    elements.contributionZipStatus.textContent = message;
+  }
+  renderContributionModeButtons();
+}
+
+async function handleContributionZipSelected(file) {
+  state.pendingContributionZipFile = file || null;
+  if (!file) {
+    updateContributionZipStatus("送信前に ZIP を検証します。");
+    return;
+  }
+  updateContributionZipStatus(`選択中: ${file.name} (${Math.round(file.size / 1024)} KB)`);
+}
+
+async function uploadSelectedContributionZip() {
+  ensureClientId();
+  const file = state.pendingContributionZipFile;
+  if (!file) {
+    updateContributionZipStatus("先に ZIP を選択してください。");
+    return;
+  }
+  if (!state.apiAvailable) {
+    updateContributionZipStatus("ZIP 送信には API 接続が必要です。");
+    return;
+  }
+
+  try {
+    updateContributionZipStatus("ZIP を検証しています...");
+    const validateForm = new FormData();
+    validateForm.append("file", file, file.name);
+    const validation = await requestApiJson("/api/contributions/upload/validate", { method: "POST", body: validateForm }, { timeoutMs: contributionUploadTimeoutMs });
+    if (!validation.valid) {
+      updateContributionZipStatus(`ZIP 検証で問題が見つかりました: ${(validation.issues || []).join(" / ")}`);
+      return;
+    }
+
+    updateContributionZipStatus(`ZIP 検証OK: ${(validation.detected_files || []).join(", ")}`);
+    const formData = new FormData();
+    formData.append("client_id", state.clientId);
+    formData.append("mode", "server");
+    formData.append("metadata", JSON.stringify({ manual_zip_upload: true, uploaded_at: new Date().toISOString() }));
+    formData.append("file", file, file.name);
+    const response = await requestApiJson("/api/contributions/upload", { method: "POST", body: formData }, { timeoutMs: contributionUploadTimeoutMs });
+    updateContributionZipStatus(`ZIP を送信しました: ${response.filename}`);
+    renderContributionStatus("ZIP をサーバーへ送信しました。", "success", response.path || "");
+  } catch (error) {
+    console.error(error);
+    updateContributionZipStatus(error.message || "ZIP の送信に失敗しました。");
+  }
+}
+
+async function startContributionCapture() {
+  ensureClientId();
+  if (state.captureSession) return;
+  if (!window.isSecureContext && !isLoopbackHost(location.hostname)) {
+    renderContributionStatus("カメラ利用は HTTPS または localhost でのみ使えます。", "warning");
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+    renderContributionStatus("この端末ではカメラ録画に対応していません。", "error");
+    return;
+  }
+
+  try {
+    const videoConstraints =
+      state.capturePerspective === "walk"
+        ? { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } }
+        : { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } };
+    const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    const recorder = new MediaRecorder(stream, {
+      mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm",
+    });
+    const chunks = [];
+    const session = {
+      stream,
+      recorder,
+      chunks,
+      positions: [],
+      orientations: [],
+      detections: [],
+      startedAt: new Date().toISOString(),
+      notes: elements.contributionNotes ? elements.contributionNotes.value.trim() : "",
+      videoBlob: null,
+      stopPromise: null,
+      detector: null,
+      perspective: state.capturePerspective,
+      serverSessionId: null,
+      serverUploadQueue: Promise.resolve(),
+      serverChunkIndex: 0,
+      serverUploadError: null,
+    };
+
+    if (state.captureMode === "server") {
+      if (!state.apiAvailable) {
+        throw new Error("サーバー直接送信には API 接続が必要です。");
+      }
+      await createContributionServerSession(session);
+      appendContributionLog(`サーバー送信セッションを開始: ${session.serverSessionId}`);
+    }
+
+    session.stopPromise = new Promise((resolve) => {
+      recorder.addEventListener(
+        "stop",
+        () => {
+          session.videoBlob = state.captureMode === "server" ? null : new Blob(chunks, { type: recorder.mimeType || "video/webm" });
+          resolve();
+        },
+        { once: true },
+      );
+    });
+    recorder.addEventListener("dataavailable", (event) => {
+      if (!event.data || !event.data.size) return;
+      if (state.captureMode === "server" && session.serverSessionId) {
+        void queueContributionChunkUpload(session, event.data);
+        return;
+      }
+      chunks.push(event.data);
+    });
+    recorder.start(state.captureMode === "server" ? 1500 : 1000);
+
+    if (elements.contributionPreview) {
+      elements.contributionPreview.srcObject = stream;
+      elements.contributionPreview.play().catch(() => {});
+    }
+    clearContributionOverlay();
+
+    if (navigator.geolocation) {
+      contributionPositionWatchId = navigator.geolocation.watchPosition(
+        (position) => {
+          session.positions.push({
+            at: new Date().toISOString(),
+            lat: Number(position.coords.latitude.toFixed(6)),
+            lon: Number(position.coords.longitude.toFixed(6)),
+            accuracy_m: Number((position.coords.accuracy || 0).toFixed(1)),
+            speed_mps: position.coords.speed,
+          });
+        },
+        (error) => console.warn(error),
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
+      );
+    }
+
+    contributionOrientationHandler = (event) => {
+      const heading = extractHeadingFromOrientation(event);
+      session.orientations.push({
+        at: new Date().toISOString(),
+        heading,
+        alpha: typeof event.alpha === "number" ? Number(event.alpha.toFixed(2)) : null,
+        beta: typeof event.beta === "number" ? Number(event.beta.toFixed(2)) : null,
+        gamma: typeof event.gamma === "number" ? Number(event.gamma.toFixed(2)) : null,
+      });
+    };
+    window.addEventListener("deviceorientation", contributionOrientationHandler, true);
+    window.addEventListener("deviceorientationabsolute", contributionOrientationHandler, true);
+
+    state.captureSession = session;
+    renderContributionModeButtons();
+    renderContributionStatus(
+      state.capturePerspective === "walk" ? "徒歩モードで記録を開始しました。" : "車前方モードで記録を開始しました。",
+      "success",
+    );
+    appendContributionLog(
+      `${state.capturePerspective === "walk" ? "徒歩" : "車前方"}モードで記録開始 / ${state.captureMode === "server" ? "リアルタイム送信" : "ローカル保存"}`,
+    );
+
+    ensureContributionDetector()
+      .then((detector) => {
+        session.detector = detector;
+        if (detector) {
+          appendContributionLog("物体認識モデルを読み込みました。");
+          clearContributionOverlay();
+        }
+      })
+      .catch((error) => {
+        console.warn(error);
+        appendContributionLog("物体認識モデルの読み込みに失敗しました。");
+      });
+
+    contributionDetectionTimer = setInterval(() => {
+      void detectContributionFrame(session);
+    }, state.capturePerspective === "walk" ? 1200 : 1800);
+  } catch (error) {
+    console.error(error);
+    renderContributionStatus(error.message || "協力モードの開始に失敗しました。", "error");
+  }
+}
+
+async function finalizeContributionCapture() {
+  const session = state.captureSession;
+  if (!session) return;
+
+  renderContributionStatus("保存処理を進めています。", "info");
+  stopContributionSensors();
+  if (session.recorder && session.recorder.state !== "inactive") session.recorder.stop();
+  if (session.stream) session.stream.getTracks().forEach((track) => track.stop());
+  await session.stopPromise;
+
+  try {
+    if (state.captureMode === "server" && session.serverSessionId) {
+      await session.serverUploadQueue;
+      if (session.serverUploadError) {
+        throw session.serverUploadError;
+      }
+      const response = await requestApiJson(
+        `/api/contributions/session/${encodeURIComponent(session.serverSessionId)}/finish`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            client_id: state.clientId,
+            metadata: buildContributionMetadata(session),
+          }),
+        },
+        { timeoutMs: contributionUploadTimeoutMs },
+      );
+      renderContributionStatus(
+        `サーバーに保存しました: ${response.chunks_received} チャンク / ${Math.round((response.total_bytes || 0) / 1024)} KB`,
+        "success",
+        response.path || "",
+      );
+    } else {
+      const archiveBlob = await buildContributionArchive(session);
+      const filename = `contribution-${new Date().toISOString().replaceAll(":", "-")}.zip`;
+      downloadBlob(archiveBlob, filename);
+      renderContributionStatus("ローカルに ZIP 保存しました。", "success");
+    }
+  } catch (error) {
+    console.error(error);
+    renderContributionStatus(error.message || "保存に失敗しました。", "warning");
+  } finally {
+    if (elements.contributionPreview) elements.contributionPreview.srcObject = null;
+    state.captureSession = null;
+    renderContributionModeButtons();
+    clearContributionOverlay();
+  }
+}
+
+function saveState() {
+  const payload = {
+    origin: state.origin,
+    destination: state.destination,
+    route: state.route,
+    routeWaypoints: state.routeWaypoints,
+    currentLocation: state.currentLocation,
+    networkInfo: state.networkInfo,
+    profile: elements.profileSelect.value,
+    preferences: elements.preferencesInput.value,
+    activeTarget: state.activeTarget,
+    customApiBase: state.customApiBase,
+    assistantMessages: state.assistantMessages,
+    assistantModel: state.assistantModel,
+    activePanel: state.activePanel,
+    topPanelCollapsed: state.topPanelCollapsed,
+    globalSearchCollapsed: state.globalSearchCollapsed,
+    sheetCollapsed: state.sheetCollapsed,
+    clientId: state.clientId,
+    followCurrentLocation: state.followCurrentLocation,
+    captureMode: state.captureMode,
+    capturePerspective: state.capturePerspective,
+  };
+  localStorage.setItem(storageKey, JSON.stringify(payload));
+}
+
+function restoreState() {
+  const raw = localStorage.getItem(storageKey);
+  if (!raw) {
+    elements.originInput.value = defaultOrigin.name;
+    elements.destinationInput.value = defaultDestination.name;
+    elements.profileSelect.value = "walk";
+    ensureClientId();
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    state.currentLocation = parsed.currentLocation || null;
+    state.route = parsed.route || null;
+    state.routeWaypoints = Array.isArray(parsed.routeWaypoints) ? parsed.routeWaypoints : [];
+    state.networkInfo = parsed.networkInfo || null;
+    state.customApiBase = normalizeApiBase(parsed.customApiBase || "");
+    state.assistantMessages = Array.isArray(parsed.assistantMessages) ? parsed.assistantMessages.slice(-12) : [];
+    state.assistantModel = parsed.assistantModel || "Ollama";
+    state.activePanel = ["search", "route", "ai", "access", "settings"].includes(parsed.activePanel) ? parsed.activePanel : "search";
+    state.topPanelCollapsed = typeof parsed.topPanelCollapsed === "boolean" ? parsed.topPanelCollapsed : window.matchMedia("(max-width: 720px)").matches;
+    state.globalSearchCollapsed = typeof parsed.globalSearchCollapsed === "boolean" ? parsed.globalSearchCollapsed : false;
+    state.sheetCollapsed = typeof parsed.sheetCollapsed === "boolean" ? parsed.sheetCollapsed : window.matchMedia("(max-width: 720px)").matches;
+    state.followCurrentLocation = typeof parsed.followCurrentLocation === "boolean" ? parsed.followCurrentLocation : true;
+    state.captureMode = parsed.captureMode === "server" ? "server" : "local";
+    state.capturePerspective = parsed.capturePerspective === "walk" ? "walk" : "car_front";
+    state.clientId = parsed.clientId || localStorage.getItem(clientIdStorageKey) || "";
+    setActiveTarget(parsed.activeTarget === "destination" ? "destination" : "origin");
+
+    elements.profileSelect.value = parsed.profile || "walk";
+    elements.preferencesInput.value = parsed.preferences || "";
+
+    if (parsed.origin) {
+      elements.originInput.value = parsed.origin.name;
+      choosePlace("origin", parsed.origin, { clearRoute: false, persist: false, fitMap: false });
+    } else {
+      elements.originInput.value = defaultOrigin.name;
+    }
+    if (parsed.destination) {
+      elements.destinationInput.value = parsed.destination.name;
+      choosePlace("destination", parsed.destination, { clearRoute: false, persist: false, fitMap: false });
+    } else {
+      elements.destinationInput.value = defaultDestination.name;
+    }
+  } catch (error) {
+    console.warn(error);
+    localStorage.removeItem(storageKey);
+    elements.originInput.value = defaultOrigin.name;
+    elements.destinationInput.value = defaultDestination.name;
+    elements.profileSelect.value = "walk";
+  }
+
+  ensureClientId();
+}
+
+async function initialize() {
+  restoreState();
+  ensureClientId();
+
+  if (queryApiBase) {
+    try {
+      applyCustomApiBase(queryApiBase, { persist: true, reconnect: false, quiet: true });
+    } catch (error) {
+      console.warn(error);
+      syncApiBaseInput();
+    }
+  } else {
+    syncApiBaseInput();
+  }
+
+  setStatus("API 接続を確認しています...", "info");
+  renderPanelState();
+  renderFollowLocationButtons();
+  renderContributionModeButtons();
+  renderContributionPerspectiveButtons();
+  clearContributionOverlay();
+  renderGlobalSearchResults();
+  renderFavorites();
+  updateContributionZipStatus("送信前に ZIP を検証します。");
+
+  await detectApiBase({ quiet: false, force: true });
+  startConnectionMonitor();
+  await loadAppInfo();
+  await loadNetworkInfo();
+  await refreshFavorites({ quiet: true });
+
+  if (!state.origin) choosePlace("origin", defaultOrigin, { clearRoute: false, persist: false });
+  if (!state.destination) choosePlace("destination", defaultDestination, { clearRoute: false, persist: false });
+  if (!elements.preferencesInput.value.trim()) {
+    elements.preferencesInput.value = "坂を避ける / 信号が少ない";
+  }
+
+  await previewPreferences({ quiet: true });
+  syncCurrentLocationMarker();
+
+  if (state.route && state.route.path && state.route.path.length) {
+    applyRoute(state.route, { persist: false, statusText: "保存済みルートを復元しました。" });
+  } else {
+    resetRouteOutput();
+    fitToVisibleLayers();
+    setStatus("準備完了です。", "success");
+  }
+
+  renderMapPickState();
+  updateBusyState();
+  renderConnectionState();
+  renderNetworkInfo();
+  renderAssistantPanel();
+  renderFavoriteCount();
+  saveState();
+}
+
+function attachExtraContributionEventHandlers() {
+  if (elements.contributionSelectZipButton) {
+    elements.contributionSelectZipButton.addEventListener("click", () => {
+      if (elements.contributionZipInput) {
+        elements.contributionZipInput.click();
+      }
+    });
+  }
+  if (elements.contributionZipInput) {
+    elements.contributionZipInput.addEventListener("change", (event) => {
+      const [file] = Array.from(event.target.files || []);
+      void handleContributionZipSelected(file || null);
+    });
+  }
+  if (elements.contributionUploadZipButton) {
+    elements.contributionUploadZipButton.addEventListener("click", () => void uploadSelectedContributionZip());
+  }
+}
+
+attachExtraContributionEventHandlers();
+
+function attachExtraStatusFixHandlers() {
+  if (elements.actionSetOriginButton) {
+    elements.actionSetOriginButton.addEventListener("click", () => {
+      if (state.selectedActionPlace) {
+        setStatus("出発地を更新しました。", "success");
+      }
+    });
+  }
+  if (elements.actionSetDestinationButton) {
+    elements.actionSetDestinationButton.addEventListener("click", () => {
+      if (state.selectedActionPlace) {
+        setStatus("目的地を更新しました。", "success");
+      }
+    });
+  }
+}
+
+attachExtraStatusFixHandlers();

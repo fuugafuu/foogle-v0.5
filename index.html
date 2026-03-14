@@ -208,7 +208,7 @@
 
                 <div class="stats-grid">
                   <div class="stat-card">
-                    <span class="stat-label">距離</span>
+                    <span class="stat-label">道のり</span>
                     <strong id="distance-value">-</strong>
                   </div>
                   <div class="stat-card">
@@ -234,6 +234,14 @@
                   <div class="stat-card stat-wide">
                     <span class="stat-label">到着目安</span>
                     <strong id="arrival-value">-</strong>
+                  </div>
+                  <div class="stat-card">
+                    <span class="stat-label">概算費用</span>
+                    <strong id="cost-value">-</strong>
+                  </div>
+                  <div class="stat-card">
+                    <span class="stat-label">フェリー</span>
+                    <strong id="ferry-value">-</strong>
                   </div>
                 </div>
 
@@ -384,6 +392,13 @@
                     <button id="contribution-start-button" type="button">記録開始</button>
                     <button id="contribution-stop-button" type="button" class="secondary">停止して保存</button>
                   </div>
+
+                  <input id="contribution-zip-input" type="file" accept=".zip,application/zip" hidden />
+                  <div class="card-actions stacked">
+                    <button id="contribution-select-zip-button" type="button" class="secondary">ZIPを選択</button>
+                    <button id="contribution-upload-zip-button" type="button" class="secondary">選択ZIPを送信</button>
+                  </div>
+                  <div id="contribution-zip-status" class="helper">送信前に ZIP を検証します。</div>
                 </div>
               </section>
             </div>
