@@ -387,7 +387,7 @@ initialize().catch((error) => {
   setStatus(error.message || "初期化に失敗しました。", "error");
 });
 
-function wireEvents() {
+function legacy_wireEvents_1() {
   if (elements.sheetToggleButton) {
     elements.sheetToggleButton.addEventListener("click", () => setSheetCollapsed(!state.sheetCollapsed));
   }
@@ -547,7 +547,7 @@ function wireEvents() {
 }
 
 
-async function initialize() {
+async function legacy_initialize_1() {
   restoreState();
   ensureClientId();
 
@@ -748,7 +748,7 @@ function buildAssistantContext() {
   };
 }
 
-async function applyAssistantResponse(response) {
+async function legacy_applyAssistantResponse_1(response) {
   state.assistantModel = response.model || (response.available === false ? "Ollama fallback" : "Ollama");
 
   if (response.origin) {
@@ -792,7 +792,7 @@ async function applyAssistantResponse(response) {
   );
 }
 
-async function sendAssistantMessage(prefilledMessage = null) {
+async function legacy_sendAssistantMessage_1(prefilledMessage = null) {
   const rawMessage = prefilledMessage !== null && prefilledMessage !== undefined ? prefilledMessage : elements.assistantInput.value || "";
   const message = rawMessage.trim();
   if (!message) {
@@ -830,7 +830,7 @@ async function sendAssistantMessage(prefilledMessage = null) {
 }
 
 
-function applyPreferenceTemplate(value) {
+function legacy_applyPreferenceTemplate_1(value) {
   const current = elements.preferencesInput.value.trim();
   if (!current) {
     elements.preferencesInput.value = value;
@@ -842,7 +842,7 @@ function applyPreferenceTemplate(value) {
   setStatus(`要望に「${value}」を追加しました。`, "success");
 }
 
-function setActiveTarget(target) {
+function legacy_setActiveTarget_1(target) {
   state.activeTarget = target;
   elements.activeTargetLabel.textContent = `Target: ${target === "origin" ? "Origin" : "Destination"}`;
   syncMobileSearchInput();
@@ -881,7 +881,7 @@ function selectedForTarget(target) {
   return target === "origin" ? elements.originSelected : elements.destinationSelected;
 }
 
-async function searchPlaces(target, { query = null, autoSelectFirst = false } = {}) {
+async function legacy_searchPlaces_1(target, { query = null, autoSelectFirst = false } = {}) {
   setActiveTarget(target);
   switchPanel("search", { expand: true, persist: false });
   const input = inputForTarget(target);
@@ -936,7 +936,7 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
   }
 }
 
-function renderResults(target, items) {
+function legacy_renderResults_1(target, items) {
   const container = resultsForTarget(target);
   container.innerHTML = "";
 
@@ -1362,7 +1362,7 @@ async function previewPreferences({ quiet = false } = {}) {
   }
 }
 
-function renderPreferenceTags(parsed) {
+function legacy_renderPreferenceTags_1(parsed) {
   elements.preferenceTags.innerHTML = "";
 
   const tags = [`モード: ${profileLabel(parsed.profile)}`];
@@ -1375,7 +1375,7 @@ function renderPreferenceTags(parsed) {
   renderStaticChips(elements.preferenceTags, tags);
 }
 
-async function requestRoute() {
+async function legacy_requestRoute_1() {
   if (!state.origin || !state.destination) {
     switchPanel("search", { expand: true, persist: false });
     setStatus("?????????????????", "warning");
@@ -1412,7 +1412,7 @@ async function requestRoute() {
 }
 
 
-function applyRoute(route, options = {}) {
+function legacy_applyRoute_1(route, options = {}) {
   const settings = { persist: true, statusText: "???????????", ...options };
 
   state.route = route;
@@ -1441,7 +1441,7 @@ function applyRoute(route, options = {}) {
 }
 
 
-function renderSummary(summary) {
+function legacy_renderSummary_1(summary) {
   elements.routeSummaryLabel.textContent = `${summary.distance_km} km / ${summary.duration_min} 分`;
   elements.distanceValue.textContent = `${summary.distance_km} km`;
   elements.durationValue.textContent = `${summary.duration_min} 分`;
@@ -1452,7 +1452,7 @@ function renderSummary(summary) {
   elements.arrivalValue.textContent = summary.estimated_arrival;
 }
 
-function resetRouteOutput() {
+function legacy_resetRouteOutput_1() {
   if (routeLayer) {
     routeLayer.remove();
     routeLayer = null;
@@ -1477,7 +1477,7 @@ function resetRouteOutput() {
   renderNavigation();
 }
 
-function clearRoute(options = {}) {
+function legacy_clearRoute_1(options = {}) {
   const settings = {
     keepStatus: false,
     persist: true,
@@ -1516,7 +1516,7 @@ function renderSteps(steps) {
   });
 }
 
-function toggleNavigation() {
+function legacy_toggleNavigation_1() {
   if (!state.route || !state.route.steps || !state.route.steps.length) {
     setStatus("???????????????", "warning");
     return;
@@ -1559,7 +1559,7 @@ function nextStep() {
   saveState();
 }
 
-function renderNavigation() {
+function legacy_renderNavigation_1() {
   const steps = (state.route && state.route.steps) || [];
   const hasRoute = steps.length > 0;
 
@@ -1713,14 +1713,14 @@ function renderFavoriteCount() {
   }
 }
 
-function renderFollowLocationButtons() {
+function legacy_renderFollowLocationButtons_1() {
   [elements.followLocationButton, elements.followLocationButtonDuplicate].filter(Boolean).forEach((button) => {
     button.textContent = state.followCurrentLocation ? "霑ｽ蟆ｾ ON" : "霑ｽ蟆ｾ OFF";
     button.classList.toggle("active-toggle", state.followCurrentLocation);
   });
 }
 
-function setFollowCurrentLocation(value, { persist = true, status = false } = {}) {
+function legacy_setFollowCurrentLocation_1(value, { persist = true, status = false } = {}) {
   state.followCurrentLocation = Boolean(value);
   renderFollowLocationButtons();
   if (state.followCurrentLocation) {
@@ -1741,20 +1741,20 @@ function followCurrentLocationOnMap({ force = false } = {}) {
   map.setView([state.currentLocation.lat, state.currentLocation.lon], Math.max(map.getZoom(), 16), { animate: true });
 }
 
-function renderContributionModeButtons() {
+function legacy_renderContributionModeButtons_1() {
   if (elements.contributionModeLocal) elements.contributionModeLocal.classList.toggle("active-toggle", state.captureMode === "local");
   if (elements.contributionModeServer) elements.contributionModeServer.classList.toggle("active-toggle", state.captureMode === "server");
   if (elements.contributionStartButton) elements.contributionStartButton.disabled = Boolean(state.captureSession);
   if (elements.contributionStopButton) elements.contributionStopButton.disabled = !state.captureSession;
 }
 
-function setContributionMode(mode) {
+function legacy_setContributionMode_1(mode) {
   state.captureMode = mode === "server" ? "server" : "local";
   renderContributionModeButtons();
   saveState();
 }
 
-function renderContributionStatus(message, kind = "info", logText = "") {
+function legacy_renderContributionStatus_1(message, kind = "info", logText = "") {
   if (elements.contributionStatus) {
     elements.contributionStatus.textContent = message;
     elements.contributionStatus.className = `status-message ${kind}`;
@@ -1791,7 +1791,7 @@ function scheduleGlobalSearch(query) {
   }, 220);
 }
 
-async function performGlobalSearch(query) {
+async function legacy_performGlobalSearch_1(query) {
   const text = (query || "").trim();
   if (!text) {
     state.globalSearchResults = [];
@@ -1859,7 +1859,7 @@ async function routeToPlace(place, { startNavigation = false } = {}) {
   }
 }
 
-async function refreshFavorites({ quiet = false } = {}) {
+async function legacy_refreshFavorites_1({ quiet = false } = {}) {
   ensureClientId();
   if (!state.apiAvailable) {
     state.favorites = [];
@@ -1879,7 +1879,7 @@ async function refreshFavorites({ quiet = false } = {}) {
 }
 
 
-function renderFavorites() {
+function legacy_renderFavorites_1() {
   renderFavoriteCount();
   if (!elements.favoritesList) return;
   elements.favoritesList.innerHTML = "";
@@ -1926,7 +1926,7 @@ function renderFavorites() {
 }
 
 
-async function saveFavoritePlace(place) {
+async function legacy_saveFavoritePlace_1(place) {
   ensureClientId();
   if (!state.apiAvailable) {
     setStatus("????????? API ????????", "warning");
@@ -1953,7 +1953,7 @@ async function saveFavoritePlace(place) {
 }
 
 
-function handleGoogleLoginClick() {
+function legacy_handleGoogleLoginClick_1() {
   if (elements.googleLoginStatus) {
     elements.googleLoginStatus.textContent = "???";
   }
@@ -2003,7 +2003,7 @@ function appendContributionLog(line) {
   elements.contributionLog.textContent = next.split("\n").slice(-8).join("\n");
 }
 
-async function detectContributionFrame(session) {
+async function legacy_detectContributionFrame_1(session) {
   if (!session || !session.detector || !elements.contributionPreview || elements.contributionPreview.readyState < 2) return;
   try {
     const predictions = await session.detector.detect(elements.contributionPreview, 12);
@@ -2052,7 +2052,7 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 500);
 }
 
-async function buildContributionArchive(session) {
+async function legacy_buildContributionArchive_1(session) {
   const JSZip = await ensureJSZipLib();
   const zip = new JSZip();
   const metadata = {
@@ -2076,7 +2076,7 @@ async function buildContributionArchive(session) {
 }
 
 
-async function startContributionCapture() {
+async function legacy_startContributionCapture_1() {
   ensureClientId();
   if (state.captureSession) return;
 
@@ -2191,7 +2191,7 @@ async function startContributionCapture() {
 }
 
 
-async function finalizeContributionCapture() {
+async function legacy_finalizeContributionCapture_1() {
   const session = state.captureSession;
   if (!session) return;
 
@@ -2233,7 +2233,7 @@ async function finalizeContributionCapture() {
 }
 
 
-function saveState() {
+function legacy_saveState_1() {
   const payload = {
     origin: state.origin,
     destination: state.destination,
@@ -2258,7 +2258,7 @@ function saveState() {
 }
 
 
-function restoreState() {
+function legacy_restoreState_1() {
   const raw = localStorage.getItem(storageKey);
   if (!raw) {
     elements.originInput.value = defaultOrigin.name;
@@ -2532,7 +2532,7 @@ function legacyRenderConnectionState() {
     : "サーバー待機中";
 }
 
-function renderConnectionState() {
+function legacy_renderConnectionState_1() {
   if (!elements.connectionPill) {
     return;
   }
@@ -2713,14 +2713,14 @@ async function fetchJson(url, options = {}, { timeoutMs = requestTimeoutMs } = {
   return payload;
 }
 
-function renderFollowLocationButtons() {
+function legacy_renderFollowLocationButtons_2() {
   [elements.followLocationButton, elements.followLocationButtonDuplicate].filter(Boolean).forEach((button) => {
     button.textContent = state.followCurrentLocation ? "追尾 ON" : "追尾 OFF";
     button.classList.toggle("active-toggle", state.followCurrentLocation);
   });
 }
 
-function setFollowCurrentLocation(value, { persist = true, status = false } = {}) {
+function legacy_setFollowCurrentLocation_2(value, { persist = true, status = false } = {}) {
   state.followCurrentLocation = Boolean(value);
   renderFollowLocationButtons();
   if (state.followCurrentLocation) {
@@ -2734,7 +2734,7 @@ function setFollowCurrentLocation(value, { persist = true, status = false } = {}
   }
 }
 
-function renderContributionModeButtons() {
+function legacy_renderContributionModeButtons_2() {
   if (elements.contributionModeLocal) elements.contributionModeLocal.classList.toggle("active-toggle", state.captureMode === "local");
   if (elements.contributionModeServer) elements.contributionModeServer.classList.toggle("active-toggle", state.captureMode === "server");
   if (elements.contributionStartButton) elements.contributionStartButton.disabled = Boolean(state.captureSession);
@@ -2742,7 +2742,7 @@ function renderContributionModeButtons() {
   renderContributionPerspectiveButtons();
 }
 
-function renderContributionPerspectiveButtons() {
+function legacy_renderContributionPerspectiveButtons_1() {
   if (elements.contributionPerspectiveDrive) {
     elements.contributionPerspectiveDrive.classList.toggle("active-toggle", state.capturePerspective === "car_front");
     elements.contributionPerspectiveDrive.disabled = Boolean(state.captureSession);
@@ -2766,7 +2766,7 @@ function setContributionPerspective(mode) {
   saveState();
 }
 
-function renderContributionOverlay(items = [], { statusText = "" } = {}) {
+function legacy_renderContributionOverlay_1(items = [], { statusText = "" } = {}) {
   if (elements.contributionPreviewShell) {
     elements.contributionPreviewShell.classList.toggle("is-detecting", items.length > 0);
   }
@@ -2785,13 +2785,13 @@ function renderContributionOverlay(items = [], { statusText = "" } = {}) {
   });
 }
 
-function clearContributionOverlay() {
+function legacy_clearContributionOverlay_1() {
   renderContributionOverlay([], {
     statusText: state.capturePerspective === "walk" ? "徒歩モード / 認識待機中" : "車前方モード / 認識待機中",
   });
 }
 
-function summarizeContributionDetections(relevant) {
+function legacy_summarizeContributionDetections_1(relevant) {
   const labelMap = {
     car: "車",
     truck: "トラック",
@@ -2863,7 +2863,7 @@ async function detectContributionFrame(session) {
   }
 }
 
-async function buildContributionArchive(session) {
+async function legacy_buildContributionArchive_2(session) {
   const JSZip = await ensureJSZipLib();
   const zip = new JSZip();
   const metadata = {
@@ -2887,7 +2887,7 @@ async function buildContributionArchive(session) {
   return zip.generateAsync({ type: "blob" });
 }
 
-async function startContributionCapture() {
+async function legacy_startContributionCapture_2() {
   ensureClientId();
   if (state.captureSession) return;
   if (!window.isSecureContext && !isLoopbackHost(location.hostname)) {
@@ -3004,7 +3004,7 @@ async function startContributionCapture() {
   }
 }
 
-async function finalizeContributionCapture() {
+async function legacy_finalizeContributionCapture_2() {
   const session = state.captureSession;
   if (!session) return;
 
@@ -3041,7 +3041,7 @@ async function finalizeContributionCapture() {
   }
 }
 
-function saveState() {
+function legacy_saveState_2() {
   const payload = {
     origin: state.origin,
     destination: state.destination,
@@ -3067,7 +3067,7 @@ function saveState() {
   localStorage.setItem(storageKey, JSON.stringify(payload));
 }
 
-function restoreState() {
+function legacy_restoreState_2() {
   const raw = localStorage.getItem(storageKey);
   if (!raw) {
     elements.originInput.value = defaultOrigin.name;
@@ -3288,7 +3288,7 @@ function wireEvents() {
   });
 }
 
-async function initialize() {
+async function legacy_initialize_2() {
   restoreState();
   ensureClientId();
 
