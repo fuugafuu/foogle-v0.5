@@ -1,6 +1,8 @@
 const storageKey = "ai-map-demo-state-v4";
 const defaultCenter = [35.681236, 139.767125];
 const fallbackApiOrigin = "http://127.0.0.1:8000";
+const healthcheckIntervalMs = 6000;
+const requestTimeoutMs = 8000;
 const queryApiBase = new URLSearchParams(location.search).get("api");
 const assistantPromptSamples = [
   "現在地から渋谷駅まで徒歩で案内して",
@@ -28,7 +30,7 @@ const defaultDestination = {
 
 const fallbackAppInfo = {
   name: "AIルート生成型 地図システム",
-  version: "0.5.0",
+  version: "0.6.0",
   engine: "osrm-fallback",
   engine_mode: "local-pc",
   public_api_base_url: null,
@@ -65,6 +67,7 @@ const state = {
   navigationIndex: 0,
   mapPickMode: null,
   activePanel: "search",
+  topPanelCollapsed: window.matchMedia("(max-width: 720px)").matches,
   sheetCollapsed: window.matchMedia("(max-width: 720px)").matches,
   busyCount: 0,
 };
@@ -75,12 +78,19 @@ const elements = {
   applyApiButton: document.getElementById("apply-api-button"),
   clearApiButton: document.getElementById("clear-api-button"),
   reconnectButton: document.getElementById("reconnect-button"),
+  topPanel: document.getElementById("top-panel"),
+  topPanelToggleButton: document.getElementById("top-panel-toggle-button"),
   sheet: document.getElementById("control-sheet"),
   sheetToggleButton: document.getElementById("sheet-toggle-button"),
   panelTabs: Array.from(document.querySelectorAll("[data-panel-tab]")),
   panelSections: Array.from(document.querySelectorAll("[data-panel-section]")),
   originInput: document.getElementById("origin-input"),
   destinationInput: document.getElementById("destination-input"),
+  mobileSearchInput: document.getElementById("mobile-search-input"),
+  mobileSearchButton: document.getElementById("mobile-search-button"),
+  mobileCurrentButton: document.getElementById("mobile-current-button"),
+  mobileOriginTargetButton: document.getElementById("mobile-origin-target-button"),
+  mobileDestinationTargetButton: document.getElementById("mobile-destination-target-button"),
   profileSelect: document.getElementById("profile-select"),
   preferencesInput: document.getElementById("preferences-input"),
   engineWarning: document.getElementById("engine-warning"),
@@ -148,18 +158,37 @@ function isSmallViewport() {
 }
 
 function renderPanelState() {
+  if (elements.topPanel) {
+    elements.topPanel.dataset.panelState = state.topPanelCollapsed ? "collapsed" : "expanded";
+  }
+  if (elements.topPanelToggleButton) {
+    elements.topPanelToggleButton.textContent = state.topPanelCollapsed ? "Open" : "Close";
+  }
   if (elements.sheet) {
     elements.sheet.dataset.sheetState = state.sheetCollapsed ? "collapsed" : "expanded";
   }
   if (elements.sheetToggleButton) {
-    elements.sheetToggleButton.textContent = state.sheetCollapsed ? "展開" : "収納";
+    elements.sheetToggleButton.textContent = state.sheetCollapsed ? "Open" : "Sheet";
   }
+  if (elements.mobileOriginTargetButton && elements.mobileDestinationTargetButton) {
+    elements.mobileOriginTargetButton.classList.toggle("active-toggle", state.activeTarget === "origin");
+    elements.mobileDestinationTargetButton.classList.toggle("active-toggle", state.activeTarget === "destination");
+  }
+  syncMobileSearchInput();
   elements.panelTabs.forEach((button) => {
     button.classList.toggle("is-active", button.dataset.panelTab === state.activePanel);
   });
   elements.panelSections.forEach((section) => {
     section.classList.toggle("is-active", section.dataset.panelSection === state.activePanel);
   });
+}
+
+function setTopPanelCollapsed(value, { persist = true } = {}) {
+  state.topPanelCollapsed = Boolean(value);
+  renderPanelState();
+  if (persist) {
+    saveState();
+  }
 }
 
 function setSheetCollapsed(value, { persist = true } = {}) {
@@ -280,6 +309,9 @@ function wireEvents() {
   if (elements.sheetToggleButton) {
     elements.sheetToggleButton.addEventListener("click", () => setSheetCollapsed(!state.sheetCollapsed));
   }
+  if (elements.topPanelToggleButton) {
+    elements.topPanelToggleButton.addEventListener("click", () => setTopPanelCollapsed(!state.topPanelCollapsed));
+  }
   elements.panelTabs.forEach((button) => {
     button.addEventListener("click", () => switchPanel(button.dataset.panelTab, { expand: true }));
   });
@@ -306,6 +338,18 @@ function wireEvents() {
   document
     .getElementById("destination-search-button")
     .addEventListener("click", () => void searchPlaces("destination"));
+  if (elements.mobileSearchButton) {
+    elements.mobileSearchButton.addEventListener("click", () => void searchPlaces(state.activeTarget));
+  }
+  if (elements.mobileCurrentButton) {
+    elements.mobileCurrentButton.addEventListener("click", () => void useCurrentLocation());
+  }
+  if (elements.mobileOriginTargetButton) {
+    elements.mobileOriginTargetButton.addEventListener("click", () => setActiveTarget("origin"));
+  }
+  if (elements.mobileDestinationTargetButton) {
+    elements.mobileDestinationTargetButton.addEventListener("click", () => setActiveTarget("destination"));
+  }
   document
     .getElementById("origin-current-button")
     .addEventListener("click", () => void useCurrentLocation());
@@ -353,6 +397,19 @@ function wireEvents() {
       void searchPlaces("destination");
     }
   });
+  if (elements.mobileSearchInput) {
+    elements.mobileSearchInput.addEventListener("input", () => syncActiveTargetInputFromMobile());
+    elements.mobileSearchInput.addEventListener("focus", () => {
+      focusPanel("search");
+      setTopPanelCollapsed(false, { persist: false });
+    });
+    elements.mobileSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void searchPlaces(state.activeTarget);
+      }
+    });
+  }
 
   elements.profileSelect.addEventListener("change", () => {
     schedulePreferencePreview();
@@ -654,7 +711,29 @@ function applyPreferenceTemplate(value) {
 
 function setActiveTarget(target) {
   state.activeTarget = target;
-  elements.activeTargetLabel.textContent = `入力先: ${target === "origin" ? "出発地" : "目的地"}`;
+  elements.activeTargetLabel.textContent = `Target: ${target === "origin" ? "Origin" : "Destination"}`;
+  syncMobileSearchInput();
+}
+
+function syncMobileSearchInput() {
+  if (!elements.mobileSearchInput) {
+    return;
+  }
+  const sourceInput = inputForTarget(state.activeTarget);
+  elements.mobileSearchInput.value = sourceInput ? sourceInput.value : "";
+  if (elements.mobileCurrentButton) {
+    elements.mobileCurrentButton.hidden = state.activeTarget !== "origin";
+  }
+}
+
+function syncActiveTargetInputFromMobile() {
+  if (!elements.mobileSearchInput) {
+    return;
+  }
+  const sourceInput = inputForTarget(state.activeTarget);
+  if (sourceInput) {
+    sourceInput.value = elements.mobileSearchInput.value;
+  }
 }
 
 function inputForTarget(target) {
@@ -673,7 +752,13 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
   setActiveTarget(target);
   switchPanel("search", { expand: true, persist: false });
   const input = inputForTarget(target);
-  const searchText = (query !== null && query !== undefined ? query : input.value).trim();
+  const typedValue =
+    query !== null && query !== undefined
+      ? query
+      : isSmallViewport() && elements.mobileSearchInput
+        ? elements.mobileSearchInput.value
+        : input.value;
+  const searchText = typedValue.trim();
 
   if (!searchText) {
     setStatus("検索語を入力してください。", "warning");
@@ -681,7 +766,8 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
   }
 
   input.value = searchText;
-  setStatus(`${target === "origin" ? "出発地" : "目的地"}を検索しています。`, "info");
+  syncMobileSearchInput();
+  setStatus(`${target === "origin" ? "Origin" : "Destination"} search in progress.`, "info");
 
   try {
     const params = new URLSearchParams({ q: searchText, limit: "8" });
@@ -777,6 +863,7 @@ function choosePlace(target, place, options = {}) {
   state[target] = normalizePlace(place);
   renderSelectedPlace(target, state[target]);
   updateMarker(target, state[target]);
+  syncMobileSearchInput();
 
   if (settings.clearRoute) {
     clearRoute({ keepStatus: true, persist: false });
@@ -1487,6 +1574,7 @@ function saveState() {
     assistantMessages: state.assistantMessages,
     assistantModel: state.assistantModel,
     activePanel: state.activePanel,
+    topPanelCollapsed: state.topPanelCollapsed,
     sheetCollapsed: state.sheetCollapsed,
   };
 
@@ -1514,6 +1602,8 @@ function restoreState() {
     state.activePanel = ["search", "route", "ai", "access"].includes(parsed.activePanel)
       ? parsed.activePanel
       : "search";
+    state.topPanelCollapsed =
+      typeof parsed.topPanelCollapsed === "boolean" ? parsed.topPanelCollapsed : window.matchMedia("(max-width: 720px)").matches;
     state.sheetCollapsed =
       typeof parsed.sheetCollapsed === "boolean" ? parsed.sheetCollapsed : window.matchMedia("(max-width: 720px)").matches;
     setActiveTarget(parsed.activeTarget === "destination" ? "destination" : "origin");
@@ -1702,6 +1792,14 @@ function buildApiCandidates() {
 
   const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
   const isPrivatePage = isPrivateNetworkHost(location.hostname);
+  const isHostedApiPage =
+    location.hostname.endsWith(".onrender.com") ||
+    location.hostname.endsWith(".fly.dev") ||
+    location.hostname.endsWith(".railway.app");
+  const isKnownStaticHost =
+    location.hostname.endsWith(".vercel.app") ||
+    location.hostname.endsWith(".netlify.app") ||
+    location.hostname.endsWith(".pages.dev");
 
   if (
     isHttpPage &&
@@ -1709,7 +1807,8 @@ function buildApiCandidates() {
       location.port === "8000" ||
       isPrivatePage ||
       isLoopbackHost(location.hostname) ||
-      (location.protocol === "https:" && !location.hostname.endsWith(".vercel.app"))
+      isHostedApiPage ||
+      (location.protocol === "https:" && !isKnownStaticHost)
     )
   ) {
     pushCandidate(location.origin);
@@ -1719,8 +1818,10 @@ function buildApiCandidates() {
     pushCandidate(`http://${location.hostname}:8000`);
   }
 
-  pushCandidate("http://127.0.0.1:8000");
-  pushCandidate("http://localhost:8000");
+  if (!isHostedApiPage && (isPrivatePage || isLoopbackHost(location.hostname) || location.protocol !== "https:")) {
+    pushCandidate("http://127.0.0.1:8000");
+    pushCandidate("http://localhost:8000");
+  }
 
   return candidates;
 }
@@ -1791,8 +1892,13 @@ function setConnectionState(isAvailable, base = state.apiBase, { quiet = false }
 
 async function probeApiBase(base) {
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(requestTimeoutMs, 5000));
     const response = await fetch(buildApiUrl(`/api/health?ts=${Date.now()}`, base), {
       cache: "no-store",
+      signal: controller.signal,
+    }).finally(() => {
+      clearTimeout(timer);
     });
     return response.ok;
   } catch (error) {
@@ -1801,6 +1907,11 @@ async function probeApiBase(base) {
 }
 
 async function detectApiBase({ quiet = true, force = false } = {}) {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    setConnectionState(false, state.apiBase || fallbackApiOrigin, { quiet: true });
+    return false;
+  }
+
   if (!force && state.apiAvailable) {
     const stillAlive = await probeApiBase(state.apiBase);
     if (stillAlive) {
@@ -1828,10 +1939,13 @@ function startConnectionMonitor() {
 
   apiHeartbeatTimer = setInterval(() => {
     void detectApiBase({ quiet: true, force: false });
-  }, 4000);
+  }, healthcheckIntervalMs);
 
   window.addEventListener("online", () => {
     void detectApiBase({ quiet: false, force: true });
+  });
+  window.addEventListener("offline", () => {
+    setConnectionState(false, state.apiBase, { quiet: true });
   });
 
   document.addEventListener("visibilitychange", () => {
@@ -1870,7 +1984,14 @@ function updateBusyState() {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+  const response = await fetch(url, {
+    ...options,
+    signal: options.signal || controller.signal,
+  }).finally(() => {
+    clearTimeout(timer);
+  });
   let payload = null;
 
   try {

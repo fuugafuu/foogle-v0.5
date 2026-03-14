@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>AIルート生成型 地図システム</title>
+    <title>Foogle Map</title>
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -16,7 +16,7 @@
       <div id="map"></div>
 
       <div class="map-ui">
-        <section class="top-panel glass-card">
+        <section class="top-panel glass-card" id="top-panel" data-panel-state="expanded">
           <div class="top-panel-header">
             <div class="brand-copy">
               <p class="eyebrow">Foogle Map</p>
@@ -26,52 +26,63 @@
             <div class="top-panel-meta">
               <span class="connection-pill offline" id="connection-pill">未接続</span>
               <span class="mini-label" id="engine-warning">ルートエンジン: demo</span>
-              <button id="sheet-toggle-button" type="button" class="secondary compact-button">
-                パネル
-              </button>
+              <button id="top-panel-toggle-button" type="button" class="secondary compact-button">折りたたむ</button>
+              <button id="sheet-toggle-button" type="button" class="secondary compact-button">パネル</button>
             </div>
           </div>
 
-          <p class="status-message info" id="status-message">初期化しています。</p>
+          <div class="top-panel-body" id="top-panel-body">
+            <p class="status-message info" id="status-message">起動中です。</p>
 
-          <div class="quick-search-stack">
-            <label class="compact-field" for="origin-input">
-              <span class="compact-field-label">出発地</span>
-              <div class="compact-input-row">
-                <input id="origin-input" type="text" placeholder="例: 東京駅 / 現在地" />
-                <button id="origin-current-button" type="button" class="secondary" data-busy-button>
-                  現在地
-                </button>
-                <button id="origin-search-button" type="button" data-busy-button>検索</button>
+            <div class="mobile-search-shell">
+              <div class="mobile-target-tabs">
+                <button id="mobile-origin-target-button" type="button" class="secondary compact-button active-toggle">出発地</button>
+                <button id="mobile-destination-target-button" type="button" class="secondary compact-button">目的地</button>
               </div>
-            </label>
-
-            <label class="compact-field" for="destination-input">
-              <span class="compact-field-label">目的地</span>
-              <div class="compact-input-row">
-                <input id="destination-input" type="text" placeholder="例: 渋谷駅 / コンビニ / 交差点" />
-                <button id="destination-search-button" type="button" data-busy-button>検索</button>
+              <div class="mobile-search-row">
+                <input id="mobile-search-input" type="text" placeholder="場所を検索" />
+                <button id="mobile-current-button" type="button" class="secondary" data-busy-button>現在地</button>
+                <button id="mobile-search-button" type="button" data-busy-button>検索</button>
               </div>
-            </label>
-          </div>
-
-          <div class="quick-action-row">
-            <button id="swap-button" type="button" class="secondary">入れ替え</button>
-            <button id="pick-origin-button" type="button" class="secondary">地図で出発</button>
-            <button id="pick-destination-button" type="button" class="secondary">地図で目的地</button>
-            <button id="stop-picking-button" type="button" class="secondary">選択終了</button>
-          </div>
-
-          <p class="helper" id="map-pick-status">地図クリック選択はオフです。</p>
-
-          <div class="selection-strip">
-            <div class="selection-card">
-              <span class="selection-label">出発地</span>
-              <div id="origin-selected" class="selected"></div>
             </div>
-            <div class="selection-card">
-              <span class="selection-label">目的地</span>
-              <div id="destination-selected" class="selected"></div>
+
+            <div class="quick-search-stack">
+              <label class="compact-field" for="origin-input">
+                <span class="compact-field-label">出発地</span>
+                <div class="compact-input-row">
+                  <input id="origin-input" type="text" placeholder="例: 東京駅 / 現在地" />
+                  <button id="origin-current-button" type="button" class="secondary" data-busy-button>現在地</button>
+                  <button id="origin-search-button" type="button" data-busy-button>検索</button>
+                </div>
+              </label>
+
+              <label class="compact-field" for="destination-input">
+                <span class="compact-field-label">目的地</span>
+                <div class="compact-input-row">
+                  <input id="destination-input" type="text" placeholder="例: 渋谷駅 / コンビニ / 交差点" />
+                  <button id="destination-search-button" type="button" data-busy-button>検索</button>
+                </div>
+              </label>
+            </div>
+
+            <div class="quick-action-row">
+              <button id="swap-button" type="button" class="secondary">入れ替え</button>
+              <button id="pick-origin-button" type="button" class="secondary">地図で出発地</button>
+              <button id="pick-destination-button" type="button" class="secondary">地図で目的地</button>
+              <button id="stop-picking-button" type="button" class="secondary">選択終了</button>
+            </div>
+
+            <p class="helper" id="map-pick-status">地図クリックで場所を選べます。</p>
+
+            <div class="selection-strip">
+              <div class="selection-card">
+                <span class="selection-label">出発地</span>
+                <div id="origin-selected" class="selected"></div>
+              </div>
+              <div class="selection-card">
+                <span class="selection-label">目的地</span>
+                <div id="destination-selected" class="selected"></div>
+              </div>
             </div>
           </div>
         </section>
@@ -94,7 +105,7 @@
                   <div class="card-header">
                     <div>
                       <p class="eyebrow">Search</p>
-                      <h2>候補検索</h2>
+                      <h2>場所検索</h2>
                     </div>
                     <span class="mini-label" id="active-target-label">入力先: 出発地</span>
                   </div>
@@ -121,7 +132,7 @@
 
                 <div class="panel-card">
                   <div class="card-actions stacked">
-                    <button id="clear-route-button" type="button" class="secondary">ルート消去</button>
+                    <button id="clear-route-button" type="button" class="secondary">ルート解除</button>
                     <button id="download-route-button" type="button" class="secondary">JSON保存</button>
                   </div>
                 </div>
@@ -151,24 +162,22 @@
                     </div>
 
                     <div class="control-actions">
-                      <button id="parse-button" type="button" class="secondary" data-busy-button>
-                        要望解析
-                      </button>
+                      <button id="parse-button" type="button" class="secondary" data-busy-button>条件解析</button>
                       <button id="route-button" type="button" data-busy-button>ルート作成</button>
                     </div>
                   </div>
 
-                  <label class="label" for="preferences-input">要望入力</label>
+                  <label class="label" for="preferences-input">条件入力</label>
                   <textarea
                     id="preferences-input"
                     rows="3"
-                    placeholder="例: 坂を避ける / 信号が少ない / 景色がいい"
+                    placeholder="例: 坂を避ける / 信号が少ない / 明るい道"
                   ></textarea>
 
                   <div id="preference-tags" class="tag-list"></div>
 
                   <div class="chip-section">
-                    <span class="section-label">要望テンプレート</span>
+                    <span class="section-label">条件テンプレート</span>
                     <div id="sample-preference-chips" class="chip-group"></div>
                   </div>
                 </div>
@@ -192,7 +201,7 @@
                     <strong id="elevation-value">-</strong>
                   </div>
                   <div class="stat-card">
-                    <span class="stat-label">信号推定</span>
+                    <span class="stat-label">交通量</span>
                     <strong id="traffic-value">-</strong>
                   </div>
                   <div class="stat-card">
@@ -204,12 +213,12 @@
                     <strong id="avg-gradient-value">-</strong>
                   </div>
                   <div class="stat-card stat-wide">
-                    <span class="stat-label">到着予測</span>
+                    <span class="stat-label">到着目安</span>
                     <strong id="arrival-value">-</strong>
                   </div>
                 </div>
 
-                <div id="nav-current" class="nav-current">ルート作成後に案内を開始できます。</div>
+                <div id="nav-current" class="nav-current">ルート作成後に案内を表示します。</div>
 
                 <div class="nav-button-row">
                   <button id="start-nav-button" type="button" class="secondary">案内開始</button>
@@ -218,7 +227,7 @@
                 </div>
 
                 <details class="panel-details" open>
-                  <summary>ルート手順</summary>
+                  <summary>ルート詳細</summary>
                   <ol id="steps-list" class="steps-list"></ol>
                 </details>
               </section>
@@ -244,9 +253,9 @@
                     <textarea
                       id="assistant-input"
                       rows="2"
-                      placeholder="例: 現在地から渋谷駅まで、徒歩で坂を避けて案内して"
+                      placeholder="例: 現在地から渋谷駅まで徒歩で案内して"
                     ></textarea>
-                    <button id="assistant-send-button" type="button" data-busy-button>AIに依頼</button>
+                    <button id="assistant-send-button" type="button" data-busy-button>AIに送信</button>
                   </div>
                 </div>
               </section>
@@ -261,10 +270,10 @@
                     <button id="reconnect-button" type="button" class="secondary">再接続</button>
                   </div>
 
-                  <div id="network-summary" class="network-summary">接続先を確認しています。</div>
+                  <div id="network-summary" class="network-summary">接続先を確認中です。</div>
                   <div id="network-links" class="chip-group"></div>
                   <p id="access-helper" class="helper">
-                    同じ Wi-Fi では LAN URL を直接開きます。外出先は HTTPS の公開 API URL を使います。
+                    同じ Wi-Fi では LAN URL を開いてください。外部回線では HTTPS の公開 API URL を使います。
                   </p>
                 </div>
 
@@ -281,9 +290,7 @@
                       <button id="apply-api-button" type="button" class="secondary">適用</button>
                     </div>
                     <div class="api-config-actions">
-                      <button id="clear-api-button" type="button" class="secondary">
-                        自動判定に戻す
-                      </button>
+                      <button id="clear-api-button" type="button" class="secondary">自動接続に戻す</button>
                     </div>
                   </div>
                 </details>

@@ -87,6 +87,15 @@ select {
   z-index: 1002;
 }
 
+.top-panel-body {
+  display: grid;
+  gap: 12px;
+}
+
+.top-panel[data-panel-state="collapsed"] .top-panel-body {
+  display: none;
+}
+
 .control-sheet {
   bottom: 16px;
   border-radius: 26px;
@@ -255,6 +264,25 @@ h2 {
 .panel-section {
   display: grid;
   gap: 10px;
+}
+
+.mobile-search-shell {
+  display: none;
+  gap: 8px;
+}
+
+.mobile-target-tabs,
+.mobile-search-row {
+  display: grid;
+  gap: 6px;
+}
+
+.mobile-target-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mobile-search-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
 .quick-search-stack {
@@ -790,6 +818,10 @@ button.active-toggle {
     border-radius: 18px;
   }
 
+  .top-panel[data-panel-state="collapsed"] {
+    padding-bottom: 10px;
+  }
+
   .control-sheet {
     left: 8px;
     right: 8px;
@@ -830,6 +862,19 @@ button.active-toggle {
     display: none;
   }
 
+  .mobile-search-shell {
+    display: grid;
+  }
+
+  .quick-search-stack,
+  .quick-action-row {
+    display: none;
+  }
+
+  .top-panel[data-panel-state="expanded"] .quick-action-row {
+    display: none;
+  }
+
   .top-panel .compact-field,
   .top-panel .selection-card {
     padding: 10px;
@@ -850,6 +895,10 @@ button.active-toggle {
     gap: 6px;
   }
 
+  .mobile-search-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
   .compact-input-row > button,
   .quick-action-row > button,
   .top-panel .compact-button,
@@ -858,12 +907,6 @@ button.active-toggle {
     min-height: 36px;
     padding: 8px 10px;
     font-size: 12px;
-  }
-
-  .quick-action-row {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
   }
 
   .quick-action-row > button,
@@ -920,12 +963,26 @@ button.active-toggle {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
+  .mobile-search-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   #origin-current-button {
     grid-column: 2;
     grid-row: 1;
   }
 
+  #mobile-current-button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
   #origin-search-button {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  #mobile-search-button {
     grid-column: 1 / -1;
     grid-row: 2;
   }
