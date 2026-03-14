@@ -1191,6 +1191,10 @@ function isPrivateNetworkHost(hostname) {
   return false;
 }
 
+function isLoopbackHost(hostname) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
 function canUseApiBaseFromCurrentPage(base) {
   if (!base) {
     return false;
@@ -1199,7 +1203,7 @@ function canUseApiBaseFromCurrentPage(base) {
   try {
     const url = new URL(base);
     if (location.protocol === "https:" && url.protocol !== "https:") {
-      return false;
+      return isLoopbackHost(url.hostname);
     }
     return true;
   } catch (error) {
@@ -1287,7 +1291,7 @@ function buildApiCandidates() {
   const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
   const isPrivatePage = isPrivateNetworkHost(location.hostname);
 
-  if (isHttpPage) {
+  if (isHttpPage && (location.port === "8000" || isPrivatePage || isLoopbackHost(location.hostname))) {
     pushCandidate(location.origin);
   }
 
@@ -1295,10 +1299,8 @@ function buildApiCandidates() {
     pushCandidate(`http://${location.hostname}:8000`);
   }
 
-  if (location.protocol !== "https:") {
-    pushCandidate("http://127.0.0.1:8000");
-    pushCandidate("http://localhost:8000");
-  }
+  pushCandidate("http://127.0.0.1:8000");
+  pushCandidate("http://localhost:8000");
 
   return candidates;
 }
