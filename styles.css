@@ -699,6 +699,96 @@ button.active-toggle {
   font-size: 13px;
 }
 
+.global-search-shell {
+  display: grid;
+  gap: 8px;
+}
+
+.global-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+}
+
+.global-search-results {
+  display: none;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.global-search-results.has-items {
+  display: grid;
+  gap: 8px;
+}
+
+.global-result-item {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+}
+
+.settings-grid,
+.mode-pill-row,
+.action-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-grid,
+.mode-pill-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.action-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.contribution-preview {
+  width: 100%;
+  min-height: 180px;
+  border-radius: 18px;
+  background: #0f172a;
+  object-fit: cover;
+}
+
+.contribution-log {
+  min-height: 48px;
+  white-space: pre-wrap;
+}
+
+.action-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 1100;
+  pointer-events: none;
+}
+
+.action-sheet.hidden {
+  display: none;
+}
+
+.action-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.32);
+  pointer-events: auto;
+}
+
+.action-sheet-card {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  padding: 16px;
+  border-radius: 24px;
+  pointer-events: auto;
+}
+
 .leaflet-top,
 .leaflet-bottom {
   z-index: 10;
@@ -866,6 +956,13 @@ button.active-toggle {
     display: grid;
   }
 
+  .global-search-row,
+  .action-grid,
+  .settings-grid,
+  .mode-pill-row {
+    grid-template-columns: 1fr;
+  }
+
   .quick-search-stack,
   .quick-action-row {
     display: none;
@@ -897,6 +994,12 @@ button.active-toggle {
 
   .mobile-search-row {
     grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .action-sheet-card {
+    left: 8px;
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
   }
 
   .compact-input-row > button,
@@ -967,6 +1070,10 @@ button.active-toggle {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
+  .global-search-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   #origin-current-button {
     grid-column: 2;
     grid-row: 1;
@@ -985,6 +1092,11 @@ button.active-toggle {
   #mobile-search-button {
     grid-column: 1 / -1;
     grid-row: 2;
+  }
+
+  #global-search-current-button,
+  #global-search-clear-button {
+    width: 100%;
   }
 
   #destination-search-button {

@@ -26,9 +26,19 @@
             <div class="top-panel-meta">
               <span class="connection-pill offline" id="connection-pill">未接続</span>
               <span class="mini-label" id="engine-warning">ルートエンジン: demo</span>
-              <button id="top-panel-toggle-button" type="button" class="secondary compact-button">折りたたむ</button>
+              <button id="settings-open-button" type="button" class="secondary compact-button">設定</button>
+              <button id="top-panel-toggle-button" type="button" class="secondary compact-button">閉じる</button>
               <button id="sheet-toggle-button" type="button" class="secondary compact-button">パネル</button>
             </div>
+          </div>
+
+          <div class="global-search-shell">
+            <div class="global-search-row">
+              <input id="global-search-input" type="text" placeholder="場所を検索。候補をタップして操作します" />
+              <button id="global-search-current-button" type="button" class="secondary">現在地</button>
+              <button id="global-search-clear-button" type="button" class="secondary">クリア</button>
+            </div>
+            <div id="global-search-results" class="global-search-results"></div>
           </div>
 
           <div class="top-panel-body" id="top-panel-body">
@@ -40,7 +50,7 @@
                 <button id="mobile-destination-target-button" type="button" class="secondary compact-button">目的地</button>
               </div>
               <div class="mobile-search-row">
-                <input id="mobile-search-input" type="text" placeholder="場所を検索" />
+                <input id="mobile-search-input" type="text" placeholder="出発地 / 目的地を検索" />
                 <button id="mobile-current-button" type="button" class="secondary" data-busy-button>現在地</button>
                 <button id="mobile-search-button" type="button" data-busy-button>検索</button>
               </div>
@@ -96,6 +106,7 @@
                 <button type="button" class="panel-tab" data-panel-tab="route">案内</button>
                 <button type="button" class="panel-tab" data-panel-tab="ai">AI</button>
                 <button type="button" class="panel-tab" data-panel-tab="access">接続</button>
+                <button type="button" class="panel-tab" data-panel-tab="settings">設定</button>
               </div>
             </div>
 
@@ -163,7 +174,7 @@
 
                     <div class="control-actions">
                       <button id="parse-button" type="button" class="secondary" data-busy-button>条件解析</button>
-                      <button id="route-button" type="button" data-busy-button>ルート作成</button>
+                      <button id="route-button" type="button" data-busy-button>ルート生成</button>
                     </div>
                   </div>
 
@@ -183,6 +194,10 @@
                 </div>
 
                 <div class="panel-card">
+                  <div class="card-header simple">
+                    <strong>案内オプション</strong>
+                    <button id="follow-location-button" type="button" class="secondary">追尾 ON</button>
+                  </div>
                   <span class="section-label">ルートハイライト</span>
                   <div id="route-highlights" class="tag-list"></div>
                 </div>
@@ -218,7 +233,7 @@
                   </div>
                 </div>
 
-                <div id="nav-current" class="nav-current">ルート作成後に案内を表示します。</div>
+                <div id="nav-current" class="nav-current">ルート生成後に案内を表示します。</div>
 
                 <div class="nav-button-row">
                   <button id="start-nav-button" type="button" class="secondary">案内開始</button>
@@ -237,7 +252,7 @@
                   <div class="card-header">
                     <div>
                       <p class="eyebrow">Assistant</p>
-                      <h2>AIアシスタント</h2>
+                      <h2>AI アシスタント</h2>
                     </div>
                     <span class="mini-label" id="assistant-model-label">Ollama</span>
                   </div>
@@ -255,7 +270,7 @@
                       rows="2"
                       placeholder="例: 現在地から渋谷駅まで徒歩で案内して"
                     ></textarea>
-                    <button id="assistant-send-button" type="button" data-busy-button>AIに送信</button>
+                    <button id="assistant-send-button" type="button" data-busy-button>送信</button>
                   </div>
                 </div>
               </section>
@@ -273,7 +288,7 @@
                   <div id="network-summary" class="network-summary">接続先を確認中です。</div>
                   <div id="network-links" class="chip-group"></div>
                   <p id="access-helper" class="helper">
-                    同じ Wi-Fi では LAN URL を開いてください。外部回線では HTTPS の公開 API URL を使います。
+                    同じ Wi-Fi では LAN URL を直接開いてください。外部回線では HTTPS の公開 URL を使います。
                   </p>
                 </div>
 
@@ -300,9 +315,87 @@
                   <div id="feature-chips" class="chip-group muted"></div>
                 </div>
               </section>
+
+              <section class="panel-section" data-panel-section="settings">
+                <div class="panel-card">
+                  <div class="card-header">
+                    <div>
+                      <p class="eyebrow">Settings</p>
+                      <h2>設定</h2>
+                    </div>
+                    <span class="mini-label" id="favorite-count">Favorites 0</span>
+                  </div>
+
+                  <div class="settings-grid">
+                    <button id="refresh-favorites-button" type="button" class="secondary">お気に入り更新</button>
+                    <button id="follow-location-button-duplicate" type="button" class="secondary">追尾 ON</button>
+                  </div>
+
+                  <div id="favorites-list" class="results compact-results"></div>
+                </div>
+
+                <div class="panel-card">
+                  <div class="card-header">
+                    <div>
+                      <p class="eyebrow">Google</p>
+                      <h2>Google ログイン</h2>
+                    </div>
+                    <span id="google-login-status" class="mini-label">未設定</span>
+                  </div>
+                  <p class="helper">クライアント ID を用意すれば後から有効化できます。今回は設定の受け皿だけ入れています。</p>
+                  <button id="google-login-button" type="button" class="secondary">Google ログイン</button>
+                </div>
+
+                <div class="panel-card">
+                  <div class="card-header">
+                    <div>
+                      <p class="eyebrow">協力</p>
+                      <h2>地図データを手伝う</h2>
+                    </div>
+                  </div>
+
+                  <div class="mode-pill-row">
+                    <button id="contribution-mode-local" type="button" class="secondary active-toggle">ローカル保存</button>
+                    <button id="contribution-mode-server" type="button" class="secondary">サーバー直接送信</button>
+                  </div>
+
+                  <label class="label" for="contribution-notes">メモ</label>
+                  <textarea id="contribution-notes" rows="2" placeholder="任意メモ。道路状況や気づいたこと"></textarea>
+
+                  <video id="contribution-preview" class="contribution-preview" autoplay muted playsinline></video>
+                  <div id="contribution-status" class="status-message info">協力モードは停止中です。</div>
+                  <div id="contribution-log" class="helper contribution-log"></div>
+
+                  <div class="card-actions stacked">
+                    <button id="contribution-start-button" type="button">記録開始</button>
+                    <button id="contribution-stop-button" type="button" class="secondary">停止して保存</button>
+                  </div>
+                </div>
+              </section>
             </div>
           </div>
         </section>
+
+        <div class="action-sheet hidden" id="place-action-sheet">
+          <div class="action-sheet-backdrop" id="place-action-backdrop"></div>
+          <div class="action-sheet-card glass-card">
+            <div class="card-header">
+              <div>
+                <p class="eyebrow">Place</p>
+                <h2 id="place-action-name">候補</h2>
+              </div>
+              <button id="action-close-button" type="button" class="secondary compact-button">閉じる</button>
+            </div>
+            <p class="helper" id="place-action-meta">候補の詳細</p>
+            <div class="action-grid">
+              <button id="action-set-origin-button" type="button" class="secondary">出発地にする</button>
+              <button id="action-set-destination-button" type="button" class="secondary">目的地にする</button>
+              <button id="action-favorite-button" type="button" class="secondary">お気に入り登録</button>
+              <button id="action-route-button" type="button" class="secondary">ルート確認</button>
+              <button id="action-navigate-button" type="button">案内開始</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

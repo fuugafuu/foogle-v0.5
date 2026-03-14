@@ -3,6 +3,9 @@ const defaultCenter = [35.681236, 139.767125];
 const fallbackApiOrigin = "http://127.0.0.1:8000";
 const healthcheckIntervalMs = 6000;
 const requestTimeoutMs = 8000;
+const assistantRequestTimeoutMs = 45000;
+const contributionUploadTimeoutMs = 120000;
+const clientIdStorageKey = "foogle-client-id-v1";
 const queryApiBase = new URLSearchParams(location.search).get("api");
 const assistantPromptSamples = [
   "現在地から渋谷駅まで徒歩で案内して",
@@ -65,11 +68,18 @@ const state = {
   assistantModel: "Ollama",
   navigationStarted: false,
   navigationIndex: 0,
+  followCurrentLocation: true,
   mapPickMode: null,
   activePanel: "search",
   topPanelCollapsed: window.matchMedia("(max-width: 720px)").matches,
   sheetCollapsed: window.matchMedia("(max-width: 720px)").matches,
   busyCount: 0,
+  clientId: "",
+  favorites: [],
+  selectedActionPlace: null,
+  captureMode: "local",
+  captureSession: null,
+  globalSearchResults: [],
 };
 
 const elements = {
@@ -80,6 +90,11 @@ const elements = {
   reconnectButton: document.getElementById("reconnect-button"),
   topPanel: document.getElementById("top-panel"),
   topPanelToggleButton: document.getElementById("top-panel-toggle-button"),
+  settingsOpenButton: document.getElementById("settings-open-button"),
+  globalSearchInput: document.getElementById("global-search-input"),
+  globalSearchCurrentButton: document.getElementById("global-search-current-button"),
+  globalSearchClearButton: document.getElementById("global-search-clear-button"),
+  globalSearchResults: document.getElementById("global-search-results"),
   sheet: document.getElementById("control-sheet"),
   sheetToggleButton: document.getElementById("sheet-toggle-button"),
   panelTabs: Array.from(document.querySelectorAll("[data-panel-tab]")),
@@ -131,6 +146,31 @@ const elements = {
   pickOriginButton: document.getElementById("pick-origin-button"),
   pickDestinationButton: document.getElementById("pick-destination-button"),
   stopPickingButton: document.getElementById("stop-picking-button"),
+  favoriteCount: document.getElementById("favorite-count"),
+  refreshFavoritesButton: document.getElementById("refresh-favorites-button"),
+  followLocationButton: document.getElementById("follow-location-button"),
+  followLocationButtonDuplicate: document.getElementById("follow-location-button-duplicate"),
+  favoritesList: document.getElementById("favorites-list"),
+  googleLoginButton: document.getElementById("google-login-button"),
+  googleLoginStatus: document.getElementById("google-login-status"),
+  contributionModeLocal: document.getElementById("contribution-mode-local"),
+  contributionModeServer: document.getElementById("contribution-mode-server"),
+  contributionNotes: document.getElementById("contribution-notes"),
+  contributionPreview: document.getElementById("contribution-preview"),
+  contributionStatus: document.getElementById("contribution-status"),
+  contributionLog: document.getElementById("contribution-log"),
+  contributionStartButton: document.getElementById("contribution-start-button"),
+  contributionStopButton: document.getElementById("contribution-stop-button"),
+  placeActionSheet: document.getElementById("place-action-sheet"),
+  placeActionBackdrop: document.getElementById("place-action-backdrop"),
+  placeActionName: document.getElementById("place-action-name"),
+  placeActionMeta: document.getElementById("place-action-meta"),
+  actionSetOriginButton: document.getElementById("action-set-origin-button"),
+  actionSetDestinationButton: document.getElementById("action-set-destination-button"),
+  actionFavoriteButton: document.getElementById("action-favorite-button"),
+  actionRouteButton: document.getElementById("action-route-button"),
+  actionNavigateButton: document.getElementById("action-navigate-button"),
+  actionCloseButton: document.getElementById("action-close-button"),
 };
 
 const busyButtons = Array.from(document.querySelectorAll("[data-busy-button]"));
@@ -147,6 +187,12 @@ let routeLayer = null;
 let apiHeartbeatTimer = null;
 let currentLocationWatchId = null;
 let orientationTrackingEnabled = false;
+let globalSearchTimer = null;
+let contributionDetectionTimer = null;
+let contributionPositionWatchId = null;
+let contributionOrientationHandler = null;
+const externalScriptPromises = new Map();
+let detectorModelPromise = null;
 const markers = {
   origin: null,
   destination: null,
@@ -200,7 +246,7 @@ function setSheetCollapsed(value, { persist = true } = {}) {
 }
 
 function switchPanel(panel, { expand = false, persist = true } = {}) {
-  const nextPanel = ["search", "route", "ai", "access"].includes(panel) ? panel : "search";
+  const nextPanel = ["search", "route", "ai", "access", "settings"].includes(panel) ? panel : "search";
   state.activePanel = nextPanel;
   if (expand) {
     state.sheetCollapsed = false;
@@ -312,15 +358,51 @@ function wireEvents() {
   if (elements.topPanelToggleButton) {
     elements.topPanelToggleButton.addEventListener("click", () => setTopPanelCollapsed(!state.topPanelCollapsed));
   }
+  if (elements.settingsOpenButton) {
+    elements.settingsOpenButton.addEventListener("click", () => switchPanel("settings", { expand: true }));
+  }
+
   elements.panelTabs.forEach((button) => {
     button.addEventListener("click", () => switchPanel(button.dataset.panelTab, { expand: true }));
   });
-  if (elements.applyApiButton) {
-    elements.applyApiButton.addEventListener("click", applyApiBaseFromInput);
+
+  if (elements.globalSearchInput) {
+    elements.globalSearchInput.addEventListener("input", () => scheduleGlobalSearch(elements.globalSearchInput.value));
+    elements.globalSearchInput.addEventListener("focus", () => setTopPanelCollapsed(false, { persist: false }));
+    elements.globalSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void performGlobalSearch(elements.globalSearchInput.value);
+      }
+    });
   }
-  if (elements.clearApiButton) {
-    elements.clearApiButton.addEventListener("click", clearCustomApiBase);
+  if (elements.globalSearchCurrentButton) {
+    elements.globalSearchCurrentButton.addEventListener("click", async () => {
+      await useCurrentLocation();
+      if (state.currentLocation) {
+        const currentPlace = buildCurrentLocationPlace(state.currentLocation);
+        if (elements.globalSearchInput) {
+          elements.globalSearchInput.value = currentPlace.name;
+        }
+        state.globalSearchResults = [currentPlace];
+        renderGlobalSearchResults();
+        openPlaceActionSheet(currentPlace);
+      }
+    });
   }
+  if (elements.globalSearchClearButton) {
+    elements.globalSearchClearButton.addEventListener("click", () => {
+      if (elements.globalSearchInput) {
+        elements.globalSearchInput.value = "";
+      }
+      state.globalSearchResults = [];
+      renderGlobalSearchResults();
+      closePlaceActionSheet();
+    });
+  }
+
+  if (elements.applyApiButton) elements.applyApiButton.addEventListener("click", applyApiBaseFromInput);
+  if (elements.clearApiButton) elements.clearApiButton.addEventListener("click", clearCustomApiBase);
   if (elements.apiBaseInput) {
     elements.apiBaseInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -332,35 +414,21 @@ function wireEvents() {
   if (elements.reconnectButton) {
     elements.reconnectButton.addEventListener("click", () => void detectApiBase({ quiet: false, force: true }));
   }
-  document
-    .getElementById("origin-search-button")
-    .addEventListener("click", () => void searchPlaces("origin"));
-  document
-    .getElementById("destination-search-button")
-    .addEventListener("click", () => void searchPlaces("destination"));
-  if (elements.mobileSearchButton) {
-    elements.mobileSearchButton.addEventListener("click", () => void searchPlaces(state.activeTarget));
-  }
-  if (elements.mobileCurrentButton) {
-    elements.mobileCurrentButton.addEventListener("click", () => void useCurrentLocation());
-  }
-  if (elements.mobileOriginTargetButton) {
-    elements.mobileOriginTargetButton.addEventListener("click", () => setActiveTarget("origin"));
-  }
-  if (elements.mobileDestinationTargetButton) {
-    elements.mobileDestinationTargetButton.addEventListener("click", () => setActiveTarget("destination"));
-  }
-  document
-    .getElementById("origin-current-button")
-    .addEventListener("click", () => void useCurrentLocation());
+
+  document.getElementById("origin-search-button").addEventListener("click", () => void searchPlaces("origin"));
+  document.getElementById("destination-search-button").addEventListener("click", () => void searchPlaces("destination"));
+  if (elements.mobileSearchButton) elements.mobileSearchButton.addEventListener("click", () => void searchPlaces(state.activeTarget));
+  if (elements.mobileCurrentButton) elements.mobileCurrentButton.addEventListener("click", () => void useCurrentLocation());
+  if (elements.mobileOriginTargetButton) elements.mobileOriginTargetButton.addEventListener("click", () => setActiveTarget("origin"));
+  if (elements.mobileDestinationTargetButton) elements.mobileDestinationTargetButton.addEventListener("click", () => setActiveTarget("destination"));
+  document.getElementById("origin-current-button").addEventListener("click", () => void useCurrentLocation());
   document.getElementById("parse-button").addEventListener("click", () => void previewPreferences());
   document.getElementById("route-button").addEventListener("click", () => void requestRoute());
   document.getElementById("swap-button").addEventListener("click", swapPlaces);
   document.getElementById("clear-route-button").addEventListener("click", () => clearRoute());
   document.getElementById("download-route-button").addEventListener("click", downloadRoute);
-  if (elements.assistantSendButton) {
-    elements.assistantSendButton.addEventListener("click", () => void sendAssistantMessage());
-  }
+
+  if (elements.assistantSendButton) elements.assistantSendButton.addEventListener("click", () => void sendAssistantMessage());
   if (elements.assistantInput) {
     elements.assistantInput.addEventListener("keydown", (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
@@ -374,29 +442,18 @@ function wireEvents() {
   elements.prevStepButton.addEventListener("click", previousStep);
   elements.nextStepButton.addEventListener("click", nextStep);
 
+  if (elements.followLocationButton) elements.followLocationButton.addEventListener("click", () => setFollowCurrentLocation(!state.followCurrentLocation, { status: true }));
+  if (elements.followLocationButtonDuplicate) elements.followLocationButtonDuplicate.addEventListener("click", () => setFollowCurrentLocation(!state.followCurrentLocation, { status: true }));
+
   elements.pickOriginButton.addEventListener("click", () => setMapPickMode("origin"));
   elements.pickDestinationButton.addEventListener("click", () => setMapPickMode("destination"));
   elements.stopPickingButton.addEventListener("click", () => setMapPickMode(null));
 
-  elements.originInput.addEventListener("focus", () => {
-    setActiveTarget("origin");
-    focusPanel("search");
-  });
-  elements.destinationInput.addEventListener("focus", () => {
-    setActiveTarget("destination");
-    focusPanel("search");
-  });
+  elements.originInput.addEventListener("focus", () => { setActiveTarget("origin"); focusPanel("search"); });
+  elements.destinationInput.addEventListener("focus", () => { setActiveTarget("destination"); focusPanel("search"); });
+  elements.originInput.addEventListener("keydown", (event) => { if (event.key === "Enter") void searchPlaces("origin"); });
+  elements.destinationInput.addEventListener("keydown", (event) => { if (event.key === "Enter") void searchPlaces("destination"); });
 
-  elements.originInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      void searchPlaces("origin");
-    }
-  });
-  elements.destinationInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      void searchPlaces("destination");
-    }
-  });
   if (elements.mobileSearchInput) {
     elements.mobileSearchInput.addEventListener("input", () => syncActiveTargetInputFromMobile());
     elements.mobileSearchInput.addEventListener("focus", () => {
@@ -411,20 +468,53 @@ function wireEvents() {
     });
   }
 
-  elements.profileSelect.addEventListener("change", () => {
-    schedulePreferencePreview();
-    saveState();
-  });
-  elements.preferencesInput.addEventListener("input", () => {
-    schedulePreferencePreview();
-    saveState();
-  });
+  elements.profileSelect.addEventListener("change", () => { schedulePreferencePreview(); saveState(); });
+  elements.preferencesInput.addEventListener("input", () => { schedulePreferencePreview(); saveState(); });
+
+  if (elements.refreshFavoritesButton) elements.refreshFavoritesButton.addEventListener("click", () => void refreshFavorites());
+  if (elements.googleLoginButton) elements.googleLoginButton.addEventListener("click", handleGoogleLoginClick);
+  if (elements.contributionModeLocal) elements.contributionModeLocal.addEventListener("click", () => setContributionMode("local"));
+  if (elements.contributionModeServer) elements.contributionModeServer.addEventListener("click", () => setContributionMode("server"));
+  if (elements.contributionStartButton) elements.contributionStartButton.addEventListener("click", () => void startContributionCapture());
+  if (elements.contributionStopButton) elements.contributionStopButton.addEventListener("click", () => void finalizeContributionCapture());
+
+  if (elements.placeActionBackdrop) elements.placeActionBackdrop.addEventListener("click", closePlaceActionSheet);
+  if (elements.actionCloseButton) elements.actionCloseButton.addEventListener("click", closePlaceActionSheet);
+  if (elements.actionSetOriginButton) {
+    elements.actionSetOriginButton.addEventListener("click", () => {
+      if (!state.selectedActionPlace) return;
+      elements.originInput.value = state.selectedActionPlace.name;
+      choosePlace("origin", state.selectedActionPlace);
+      closePlaceActionSheet();
+      setStatus("???????????", "success");
+    });
+  }
+  if (elements.actionSetDestinationButton) {
+    elements.actionSetDestinationButton.addEventListener("click", () => {
+      if (!state.selectedActionPlace) return;
+      elements.destinationInput.value = state.selectedActionPlace.name;
+      choosePlace("destination", state.selectedActionPlace);
+      closePlaceActionSheet();
+      setStatus("???????????", "success");
+    });
+  }
+  if (elements.actionFavoriteButton) elements.actionFavoriteButton.addEventListener("click", () => { if (state.selectedActionPlace) void saveFavoritePlace(state.selectedActionPlace); });
+  if (elements.actionRouteButton) elements.actionRouteButton.addEventListener("click", () => { if (state.selectedActionPlace) void routeToPlace(state.selectedActionPlace, { startNavigation: false }); });
+  if (elements.actionNavigateButton) elements.actionNavigateButton.addEventListener("click", () => { if (state.selectedActionPlace) void routeToPlace(state.selectedActionPlace, { startNavigation: true }); });
 
   map.on("click", handleMapClick);
+  map.on("dragstart", () => {
+    if (state.navigationStarted && state.followCurrentLocation) {
+      setFollowCurrentLocation(false, { status: true });
+    }
+  });
 }
+
 
 async function initialize() {
   restoreState();
+  ensureClientId();
+
   if (queryApiBase) {
     try {
       applyCustomApiBase(queryApiBase, { persist: true, reconnect: false, quiet: true });
@@ -436,32 +526,35 @@ async function initialize() {
     syncApiBaseInput();
   }
 
-  setStatus("API接続先を確認しています。", "info");
+  setStatus("Checking API connection...", "info");
   renderPanelState();
+  renderFollowLocationButtons();
+  renderContributionModeButtons();
+  renderGlobalSearchResults();
+  renderFavorites();
+
   await detectApiBase({ quiet: false, force: true });
   startConnectionMonitor();
   await loadAppInfo();
   await loadNetworkInfo();
-  if (!state.origin) {
-    choosePlace("origin", defaultOrigin, { clearRoute: false, persist: false });
-  }
-  if (!state.destination) {
-    choosePlace("destination", defaultDestination, { clearRoute: false, persist: false });
-  }
+  await refreshFavorites({ quiet: true });
+
+  if (!state.origin) choosePlace("origin", defaultOrigin, { clearRoute: false, persist: false });
+  if (!state.destination) choosePlace("destination", defaultDestination, { clearRoute: false, persist: false });
 
   if (!elements.preferencesInput.value.trim()) {
-    elements.preferencesInput.value = "坂を避ける。信号が少ないルート";
+    elements.preferencesInput.value = "????? / ?????????";
   }
 
   await previewPreferences({ quiet: true });
   syncCurrentLocationMarker();
 
   if (state.route && state.route.path && state.route.path.length) {
-    applyRoute(state.route, { persist: false, statusText: "前回のルートを復元しました。" });
+    applyRoute(state.route, { persist: false, statusText: "Saved route restored." });
   } else {
     resetRouteOutput();
     fitToVisibleLayers();
-    setStatus("地点を選んでルート作成できます。", "success");
+    setStatus("Ready.", "success");
   }
 
   renderMapPickState();
@@ -469,8 +562,10 @@ async function initialize() {
   renderConnectionState();
   renderNetworkInfo();
   renderAssistantPanel();
+  renderFavoriteCount();
   saveState();
 }
+
 
 async function loadAppInfo() {
   try {
@@ -662,40 +757,42 @@ async function applyAssistantResponse(response) {
 }
 
 async function sendAssistantMessage(prefilledMessage = null) {
-  const rawMessage =
-    prefilledMessage !== null && prefilledMessage !== undefined
-      ? prefilledMessage
-      : elements.assistantInput.value || "";
+  const rawMessage = prefilledMessage !== null && prefilledMessage !== undefined ? prefilledMessage : elements.assistantInput.value || "";
   const message = rawMessage.trim();
   if (!message) {
-    setStatus("AI に依頼する内容を入力してください。", "warning");
+    setStatus("AI ??????????????????", "warning");
     return;
   }
 
   pushAssistantMessage("user", message);
   elements.assistantInput.value = "";
   focusPanel("ai");
-  setStatus("AI が条件を整理しています。", "info");
+  setStatus("AI ??????????...", "info");
 
   try {
     const response = await withBusy(() =>
-      requestApiJson("/api/assistant", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message,
-          context: buildAssistantContext(),
-        }),
-      }),
+      requestApiJson(
+        "/api/assistant",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, context: buildAssistantContext() }),
+        },
+        { timeoutMs: assistantRequestTimeoutMs },
+      ),
     );
-
     await applyAssistantResponse(response);
   } catch (error) {
     console.error(error);
-    pushAssistantMessage("assistant", error.message || "AI アシスタントの実行に失敗しました。", []);
-    setStatus(error.message || "AI アシスタントの実行に失敗しました。", "error");
+    const isTimeout = Boolean(error && (error.isTimeout || error.name === "AbortError" || /timeout|timed out|aborted/i.test(error.message || "")));
+    const reply = isTimeout
+      ? "AI ????????????????????????????????"
+      : error.message || "AI ?????????????????";
+    pushAssistantMessage("assistant", reply, []);
+    setStatus(reply, isTimeout ? "warning" : "error");
   }
 }
+
 
 function applyPreferenceTemplate(value) {
   const current = elements.preferencesInput.value.trim();
@@ -1122,12 +1219,14 @@ function applyCurrentLocationPosition(position, { setAsOrigin = false, fitMap = 
     updateMarker("origin", state.origin);
   }
 
-  saveState();
-
-  if (statusText) {
-    setStatus(statusText, "success");
+  if (state.navigationStarted && state.followCurrentLocation) {
+    followCurrentLocationOnMap({ force: true });
   }
+
+  saveState();
+  if (statusText) setStatus(statusText, "success");
 }
+
 
 function ensureCurrentLocationWatch() {
   if (!navigator.geolocation || currentLocationWatchId !== null) {
@@ -1243,74 +1342,68 @@ function renderPreferenceTags(parsed) {
 async function requestRoute() {
   if (!state.origin || !state.destination) {
     switchPanel("search", { expand: true, persist: false });
-    setStatus("出発地と目的地を設定してください。", "warning");
-    return;
+    setStatus("?????????????????", "warning");
+    throw new Error("Origin and destination are required.");
   }
 
   switchPanel("route", { expand: true, persist: false });
-  setStatus("ルートを作成しています。", "info");
+  setStatus("???????????...", "info");
 
   try {
     const route = await withBusy(() =>
-      requestApiJson("/api/routes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          origin: state.origin,
-          destination: state.destination,
-          profile: elements.profileSelect.value,
-          preferences_text: elements.preferencesInput.value.trim(),
-        }),
-      }),
+      requestApiJson(
+        "/api/routes",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            origin: state.origin,
+            destination: state.destination,
+            profile: elements.profileSelect.value,
+            preferences_text: elements.preferencesInput.value.trim(),
+          }),
+        },
+        { timeoutMs: 20000 },
+      ),
     );
-
     applyRoute(route);
+    return route;
   } catch (error) {
     console.error(error);
-    setStatus(error.message || "ルート作成に失敗しました。", "error");
+    setStatus(error.message || "?????????????", "error");
+    throw error;
   }
 }
 
+
 function applyRoute(route, options = {}) {
-  const settings = {
-    persist: true,
-    statusText: "ルートを更新しました。",
-    ...options,
-  };
+  const settings = { persist: true, statusText: "???????????", ...options };
 
   state.route = route;
   state.navigationStarted = false;
   state.navigationIndex = 0;
 
-  elements.engineWarning.textContent =
-    `ルートエンジン: ${route.engine} / ${route.warning || "ローカルPCで計算"}`;
-
+  elements.engineWarning.textContent = `Route engine: ${route.engine} / ${route.warning || "local"}`;
   renderPreferenceTags(route.parsed_preferences);
-  renderStaticChips(elements.routeHighlights, route.highlights || ["標準ルート"]);
+  renderStaticChips(elements.routeHighlights, route.highlights || ["Route ready"]);
   renderSummary(route.summary);
   renderSteps(route.steps || []);
   renderNavigation();
 
-  if (routeLayer) {
-    routeLayer.remove();
-  }
+  if (routeLayer) routeLayer.remove();
 
   const latLngs = route.path.map((point) => [point.lat, point.lon]);
-  routeLayer = L.polyline(latLngs, {
-    color: "#3b82f6",
-    weight: 6,
-    opacity: 0.9,
-  }).addTo(map);
+  routeLayer = L.polyline(latLngs, { color: "#3b82f6", weight: 6, opacity: 0.9 }).addTo(map);
 
   fitToVisibleLayers();
   switchPanel("route", { expand: true, persist: false });
-
-  if (settings.persist) {
-    saveState();
+  if (state.currentLocation && state.followCurrentLocation) {
+    followCurrentLocationOnMap({ force: true });
   }
-
+  if (settings.persist) saveState();
   setStatus(settings.statusText, "success");
 }
+
 
 function renderSummary(summary) {
   elements.routeSummaryLabel.textContent = `${summary.distance_km} km / ${summary.duration_min} 分`;
@@ -1389,7 +1482,7 @@ function renderSteps(steps) {
 
 function toggleNavigation() {
   if (!state.route || !state.route.steps || !state.route.steps.length) {
-    setStatus("先にルートを作成してください。", "warning");
+    setStatus("???????????????", "warning");
     return;
   }
 
@@ -1397,11 +1490,16 @@ function toggleNavigation() {
   if (state.navigationStarted && state.navigationIndex >= state.route.steps.length) {
     state.navigationIndex = 0;
   }
+  if (state.navigationStarted) {
+    setFollowCurrentLocation(true, { persist: false, status: false });
+    followCurrentLocationOnMap({ force: true });
+  }
 
   renderNavigation();
   saveState();
-  setStatus(state.navigationStarted ? "案内を開始しました。" : "案内を停止しました。", "success");
+  setStatus(state.navigationStarted ? "??????????" : "??????????", state.navigationStarted ? "success" : "info");
 }
+
 
 function previousStep() {
   if (!state.route || !state.route.steps || !state.route.steps.length) {
@@ -1531,7 +1629,7 @@ function swapPlaces() {
 
 function downloadRoute() {
   if (!state.route) {
-    setStatus("保存するルートがありません。", "warning");
+    setStatus("No route to export.", "warning");
     return;
   }
 
@@ -1545,20 +1643,559 @@ function downloadRoute() {
     route: state.route,
   };
 
-  const blob = new Blob([JSON.stringify(payload, null, 2)], {
-    type: "application/json",
-  });
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   const timestamp = new Date().toISOString().replaceAll(":", "-");
-
   anchor.href = url;
   anchor.download = `route-${timestamp}.json`;
   anchor.click();
-
   URL.revokeObjectURL(url);
-  setStatus("ルートJSONを保存しました。", "success");
+  setStatus("Route JSON exported.", "success");
 }
+
+
+function ensureClientId() {
+  if (state.clientId) return state.clientId;
+  const existing = localStorage.getItem(clientIdStorageKey);
+  if (existing) {
+    state.clientId = existing;
+    return existing;
+  }
+  const nextId =
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  state.clientId = nextId;
+  localStorage.setItem(clientIdStorageKey, nextId);
+  return nextId;
+}
+
+function renderFavoriteCount() {
+  if (elements.favoriteCount) {
+    elements.favoriteCount.textContent = `Favorites ${state.favorites.length}`;
+  }
+}
+
+function renderFollowLocationButtons() {
+  [elements.followLocationButton, elements.followLocationButtonDuplicate].filter(Boolean).forEach((button) => {
+    button.textContent = state.followCurrentLocation ? "霑ｽ蟆ｾ ON" : "霑ｽ蟆ｾ OFF";
+    button.classList.toggle("active-toggle", state.followCurrentLocation);
+  });
+}
+
+function setFollowCurrentLocation(value, { persist = true, status = false } = {}) {
+  state.followCurrentLocation = Boolean(value);
+  renderFollowLocationButtons();
+  if (state.followCurrentLocation) {
+    followCurrentLocationOnMap({ force: true });
+  }
+  if (persist) {
+    saveState();
+  }
+  if (status) {
+    setStatus(state.followCurrentLocation ? "?????????????" : "????????????", "info");
+  }
+}
+
+
+function followCurrentLocationOnMap({ force = false } = {}) {
+  if (!state.currentLocation || !state.followCurrentLocation) return;
+  if (!force && !state.navigationStarted) return;
+  map.setView([state.currentLocation.lat, state.currentLocation.lon], Math.max(map.getZoom(), 16), { animate: true });
+}
+
+function renderContributionModeButtons() {
+  if (elements.contributionModeLocal) elements.contributionModeLocal.classList.toggle("active-toggle", state.captureMode === "local");
+  if (elements.contributionModeServer) elements.contributionModeServer.classList.toggle("active-toggle", state.captureMode === "server");
+  if (elements.contributionStartButton) elements.contributionStartButton.disabled = Boolean(state.captureSession);
+  if (elements.contributionStopButton) elements.contributionStopButton.disabled = !state.captureSession;
+}
+
+function setContributionMode(mode) {
+  state.captureMode = mode === "server" ? "server" : "local";
+  renderContributionModeButtons();
+  saveState();
+}
+
+function renderContributionStatus(message, kind = "info", logText = "") {
+  if (elements.contributionStatus) {
+    elements.contributionStatus.textContent = message;
+    elements.contributionStatus.className = `status-message ${kind}`;
+  }
+  if (elements.contributionLog && logText) {
+    elements.contributionLog.textContent = logText;
+  }
+}
+
+function renderGlobalSearchResults() {
+  if (!elements.globalSearchResults) return;
+  elements.globalSearchResults.innerHTML = "";
+  const items = state.globalSearchResults || [];
+  elements.globalSearchResults.classList.toggle("has-items", items.length > 0);
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "result-item global-result-item";
+    button.innerHTML = `<strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.description || item.category || "")}</span><small class="result-meta">${escapeHtml(buildPlaceMeta(item))}</small>`;
+    button.addEventListener("click", () => openPlaceActionSheet(item));
+    elements.globalSearchResults.append(button);
+  });
+}
+
+function scheduleGlobalSearch(query) {
+  if (globalSearchTimer) clearTimeout(globalSearchTimer);
+  if (!query || !query.trim()) {
+    state.globalSearchResults = [];
+    renderGlobalSearchResults();
+    return;
+  }
+  globalSearchTimer = setTimeout(() => {
+    void performGlobalSearch(query);
+  }, 220);
+}
+
+async function performGlobalSearch(query) {
+  const text = (query || "").trim();
+  if (!text) {
+    state.globalSearchResults = [];
+    renderGlobalSearchResults();
+    return;
+  }
+  try {
+    const params = new URLSearchParams({ q: text, limit: "8" });
+    if (state.currentLocation) {
+      params.set("near_lat", String(state.currentLocation.lat));
+      params.set("near_lon", String(state.currentLocation.lon));
+    }
+    const data = await requestApiJson(`/api/places/search?${params.toString()}`, {}, { quiet: true, timeoutMs: 12000 });
+    state.globalSearchResults = data.items || [];
+    renderGlobalSearchResults();
+  } catch (error) {
+    console.warn(error);
+    state.globalSearchResults = [];
+    renderGlobalSearchResults();
+  }
+}
+
+function openPlaceActionSheet(place) {
+  state.selectedActionPlace = normalizePlace(place);
+  if (elements.placeActionName) elements.placeActionName.textContent = state.selectedActionPlace.name;
+  if (elements.placeActionMeta) {
+    elements.placeActionMeta.textContent =
+      buildPlaceMeta(state.selectedActionPlace) || state.selectedActionPlace.description || state.selectedActionPlace.category;
+  }
+  if (elements.placeActionSheet) elements.placeActionSheet.classList.remove("hidden");
+}
+
+function closePlaceActionSheet() {
+  state.selectedActionPlace = null;
+  if (elements.placeActionSheet) elements.placeActionSheet.classList.add("hidden");
+}
+
+async function routeToPlace(place, { startNavigation = false } = {}) {
+  const targetPlace = normalizePlace(place);
+  if (!state.origin) {
+    if (state.currentLocation) {
+      const currentPlace = buildCurrentLocationPlace(state.currentLocation);
+      elements.originInput.value = currentPlace.name;
+      choosePlace("origin", currentPlace, { clearRoute: false });
+    } else {
+      elements.originInput.value = defaultOrigin.name;
+      choosePlace("origin", defaultOrigin, { clearRoute: false });
+    }
+  }
+  elements.destinationInput.value = targetPlace.name;
+  choosePlace("destination", targetPlace, { clearRoute: false });
+  closePlaceActionSheet();
+  try {
+    await requestRoute();
+    if (startNavigation && state.route) {
+      state.navigationStarted = true;
+      state.navigationIndex = 0;
+      setFollowCurrentLocation(true, { persist: false, status: false });
+      renderNavigation();
+      followCurrentLocationOnMap({ force: true });
+      saveState();
+    }
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+async function refreshFavorites({ quiet = false } = {}) {
+  ensureClientId();
+  if (!state.apiAvailable) {
+    state.favorites = [];
+    renderFavorites();
+    return;
+  }
+  try {
+    const payload = await requestApiJson(`/api/favorites?client_id=${encodeURIComponent(state.clientId)}`, {}, { quiet, timeoutMs: 10000 });
+    state.favorites = payload.items || [];
+    renderFavorites();
+  } catch (error) {
+    console.warn(error);
+    if (!quiet) {
+      setStatus(error.message || "????????????????", "error");
+    }
+  }
+}
+
+
+function renderFavorites() {
+  renderFavoriteCount();
+  if (!elements.favoritesList) return;
+  elements.favoritesList.innerHTML = "";
+
+  if (!state.favorites.length) {
+    const empty = document.createElement("p");
+    empty.className = "result-empty";
+    empty.textContent = "??????????????";
+    elements.favoritesList.append(empty);
+    return;
+  }
+
+  state.favorites.forEach((favorite) => {
+    const row = document.createElement("div");
+    row.className = "selected-card";
+    row.innerHTML = `<strong>${escapeHtml((favorite.label || (favorite.place && favorite.place.name) || "Favorite"))}</strong><span>${escapeHtml((favorite.place && (favorite.place.description || favorite.place.category)) || "")}</span><small class="result-meta">${favorite.ip_match ? "IP??" : "IP????"}</small>`;
+    const actions = document.createElement("div");
+    actions.className = "assistant-actions";
+
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "secondary compact-button";
+    openButton.textContent = "??";
+    openButton.addEventListener("click", () => openPlaceActionSheet(favorite.place));
+    actions.append(openButton);
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "secondary compact-button";
+    deleteButton.textContent = "??";
+    deleteButton.addEventListener("click", async () => {
+      try {
+        await requestApiJson(`/api/favorites/${encodeURIComponent(favorite.id)}?client_id=${encodeURIComponent(state.clientId)}`, { method: "DELETE" }, { timeoutMs: 10000 });
+        await refreshFavorites({ quiet: true });
+      } catch (error) {
+        setStatus(error.message || "????????????????", "error");
+      }
+    });
+    actions.append(deleteButton);
+
+    row.append(actions);
+    elements.favoritesList.append(row);
+  });
+}
+
+
+async function saveFavoritePlace(place) {
+  ensureClientId();
+  if (!state.apiAvailable) {
+    setStatus("????????? API ????????", "warning");
+    return;
+  }
+  try {
+    const normalizedPlace = normalizePlace(place);
+    const response = await requestApiJson(
+      "/api/favorites",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: state.clientId, place: normalizedPlace, label: normalizedPlace.name }),
+      },
+      { timeoutMs: 10000 },
+    );
+    state.favorites = response.items || [];
+    renderFavorites();
+    closePlaceActionSheet();
+    setStatus("?????????????", "success");
+  } catch (error) {
+    setStatus(error.message || "???????????????", "error");
+  }
+}
+
+
+function handleGoogleLoginClick() {
+  if (elements.googleLoginStatus) {
+    elements.googleLoginStatus.textContent = "???";
+  }
+  setStatus("Google ???????????ID???????URL???????????? UI ??????????????", "info");
+}
+
+
+async function ensureExternalScript(src) {
+  if (externalScriptPromises.has(src)) return externalScriptPromises.get(src);
+  const promise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+    document.head.append(script);
+  });
+  externalScriptPromises.set(src, promise);
+  return promise;
+}
+
+async function ensureJSZipLib() {
+  if (window.JSZip) return window.JSZip;
+  await ensureExternalScript("https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js");
+  return window.JSZip;
+}
+
+async function ensureContributionDetector() {
+  if (detectorModelPromise) return detectorModelPromise;
+  if (!window.cocoSsd) {
+    await ensureExternalScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js");
+    await ensureExternalScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js");
+  }
+  if (!window.cocoSsd) return null;
+  detectorModelPromise = window.cocoSsd.load({ base: "lite_mobilenet_v2" }).catch((error) => {
+    console.warn(error);
+    detectorModelPromise = null;
+    return null;
+  });
+  return detectorModelPromise;
+}
+
+function appendContributionLog(line) {
+  if (!elements.contributionLog) return;
+  const current = elements.contributionLog.textContent || "";
+  const next = `${current}${current ? "\n" : ""}${line}`;
+  elements.contributionLog.textContent = next.split("\n").slice(-8).join("\n");
+}
+
+async function detectContributionFrame(session) {
+  if (!session || !session.detector || !elements.contributionPreview || elements.contributionPreview.readyState < 2) return;
+  try {
+    const predictions = await session.detector.detect(elements.contributionPreview, 12);
+    const relevant = predictions
+      .filter((item) => ["car", "truck", "bus", "traffic light", "motorcycle", "bicycle", "stop sign", "person"].includes(item.class))
+      .map((item) => ({
+        class: item.class,
+        score: Number(item.score.toFixed(3)),
+        bbox: item.bbox.map((value) => Number(value.toFixed(1))),
+      }));
+    session.detections.push({
+      at: new Date().toISOString(),
+      items: relevant,
+      car_count: relevant.filter((item) => ["car", "truck", "bus", "motorcycle"].includes(item.class)).length,
+      traffic_signal_count: relevant.filter((item) => item.class === "traffic light").length,
+      road_width_estimate_m: null,
+    });
+    if (relevant.length) appendContributionLog(`隱崎ｭ・ ${relevant.map((item) => item.class).join(", ")}`);
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+function stopContributionSensors() {
+  if (contributionDetectionTimer) {
+    clearInterval(contributionDetectionTimer);
+    contributionDetectionTimer = null;
+  }
+  if (navigator.geolocation && contributionPositionWatchId !== null) {
+    navigator.geolocation.clearWatch(contributionPositionWatchId);
+    contributionPositionWatchId = null;
+  }
+  if (contributionOrientationHandler) {
+    window.removeEventListener("deviceorientation", contributionOrientationHandler, true);
+    window.removeEventListener("deviceorientationabsolute", contributionOrientationHandler, true);
+    contributionOrientationHandler = null;
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 500);
+}
+
+async function buildContributionArchive(session) {
+  const JSZip = await ensureJSZipLib();
+  const zip = new JSZip();
+  const metadata = {
+    client_id: state.clientId,
+    mode: state.captureMode,
+    started_at: session.startedAt,
+    stopped_at: new Date().toISOString(),
+    notes: session.notes || "",
+    route: state.route ? { summary: state.route.summary, highlights: state.route.highlights } : null,
+    current_location: state.currentLocation,
+    detection_note: "road_width_estimate_m is not implemented yet, so it is null.",
+  };
+  zip.file("metadata.json", JSON.stringify(metadata, null, 2));
+  zip.file("positions.json", JSON.stringify(session.positions, null, 2));
+  zip.file("orientation.json", JSON.stringify(session.orientations, null, 2));
+  zip.file("detections.json", JSON.stringify(session.detections, null, 2));
+  if (session.videoBlob) {
+    zip.file("video.webm", session.videoBlob);
+  }
+  return zip.generateAsync({ type: "blob" });
+}
+
+
+async function startContributionCapture() {
+  ensureClientId();
+  if (state.captureSession) return;
+
+  if (!window.isSecureContext && !isLoopbackHost(location.hostname)) {
+    renderContributionStatus("???????????? HTTPS ??? localhost ????????", "warning");
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+    renderContributionStatus("?????????????????????", "error");
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    const recorder = new MediaRecorder(stream, {
+      mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm",
+    });
+    const chunks = [];
+    const session = {
+      stream,
+      recorder,
+      chunks,
+      positions: [],
+      orientations: [],
+      detections: [],
+      startedAt: new Date().toISOString(),
+      notes: elements.contributionNotes ? elements.contributionNotes.value.trim() : "",
+      videoBlob: null,
+      stopPromise: null,
+      detector: null,
+    };
+
+    session.stopPromise = new Promise((resolve) => {
+      recorder.addEventListener(
+        "stop",
+        () => {
+          session.videoBlob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
+          resolve();
+        },
+        { once: true },
+      );
+    });
+
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data && event.data.size) {
+        chunks.push(event.data);
+      }
+    });
+
+    recorder.start(1000);
+    if (elements.contributionPreview) {
+      elements.contributionPreview.srcObject = stream;
+      elements.contributionPreview.play().catch(() => {});
+    }
+
+    if (navigator.geolocation) {
+      contributionPositionWatchId = navigator.geolocation.watchPosition(
+        (position) => {
+          session.positions.push({
+            at: new Date().toISOString(),
+            lat: Number(position.coords.latitude.toFixed(6)),
+            lon: Number(position.coords.longitude.toFixed(6)),
+            accuracy_m: Number((position.coords.accuracy || 0).toFixed(1)),
+            speed_mps: position.coords.speed,
+          });
+        },
+        (error) => console.warn(error),
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
+      );
+    }
+
+    contributionOrientationHandler = (event) => {
+      const heading = extractHeadingFromOrientation(event);
+      session.orientations.push({
+        at: new Date().toISOString(),
+        heading,
+        alpha: typeof event.alpha === "number" ? Number(event.alpha.toFixed(2)) : null,
+        beta: typeof event.beta === "number" ? Number(event.beta.toFixed(2)) : null,
+        gamma: typeof event.gamma === "number" ? Number(event.gamma.toFixed(2)) : null,
+      });
+    };
+    window.addEventListener("deviceorientation", contributionOrientationHandler, true);
+    window.addEventListener("deviceorientationabsolute", contributionOrientationHandler, true);
+
+    state.captureSession = session;
+    renderContributionModeButtons();
+    renderContributionStatus(`???????????? (${state.captureMode})`, "success");
+    appendContributionLog("??????????");
+
+    ensureContributionDetector()
+      .then((detector) => {
+        session.detector = detector;
+        if (detector) {
+          appendContributionLog("????????????????");
+        }
+      })
+      .catch((error) => {
+        console.warn(error);
+        appendContributionLog("????????????????????");
+      });
+
+    contributionDetectionTimer = setInterval(() => {
+      void detectContributionFrame(session);
+    }, 2500);
+  } catch (error) {
+    console.error(error);
+    renderContributionStatus(error.message || "????????????????", "error");
+  }
+}
+
+
+async function finalizeContributionCapture() {
+  const session = state.captureSession;
+  if (!session) return;
+
+  renderContributionStatus("??????????????", "info");
+  stopContributionSensors();
+  if (session.recorder && session.recorder.state !== "inactive") session.recorder.stop();
+  if (session.stream) session.stream.getTracks().forEach((track) => track.stop());
+  await session.stopPromise;
+
+  const archiveBlob = await buildContributionArchive(session);
+  const filename = `contribution-${new Date().toISOString().replaceAll(":", "-")}.zip`;
+
+  try {
+    if (state.captureMode === "server") {
+      const formData = new FormData();
+      formData.append("client_id", state.clientId);
+      formData.append("mode", state.captureMode);
+      formData.append("metadata", JSON.stringify({ notes: session.notes || "", started_at: session.startedAt }, null, 2));
+      formData.append("file", archiveBlob, filename);
+      const response = await requestApiJson(
+        "/api/contributions/upload",
+        { method: "POST", body: formData },
+        { timeoutMs: contributionUploadTimeoutMs },
+      );
+      renderContributionStatus(`???????????: ${response.filename}`, "success", response.path || "");
+    } else {
+      downloadBlob(archiveBlob, filename);
+      renderContributionStatus("????? ZIP ???????", "success");
+    }
+  } catch (error) {
+    console.error(error);
+    downloadBlob(archiveBlob, filename);
+    renderContributionStatus("?????????????????????????????", "warning", error.message || "");
+  } finally {
+    if (elements.contributionPreview) elements.contributionPreview.srcObject = null;
+    state.captureSession = null;
+    renderContributionModeButtons();
+  }
+}
+
 
 function saveState() {
   const payload = {
@@ -1576,10 +2213,14 @@ function saveState() {
     activePanel: state.activePanel,
     topPanelCollapsed: state.topPanelCollapsed,
     sheetCollapsed: state.sheetCollapsed,
+    clientId: state.clientId,
+    followCurrentLocation: state.followCurrentLocation,
+    captureMode: state.captureMode,
   };
 
   localStorage.setItem(storageKey, JSON.stringify(payload));
 }
+
 
 function restoreState() {
   const raw = localStorage.getItem(storageKey);
@@ -1587,6 +2228,7 @@ function restoreState() {
     elements.originInput.value = defaultOrigin.name;
     elements.destinationInput.value = defaultDestination.name;
     elements.profileSelect.value = "walk";
+    ensureClientId();
     return;
   }
 
@@ -1599,13 +2241,14 @@ function restoreState() {
     state.customApiBase = normalizeApiBase(parsed.customApiBase || "");
     state.assistantMessages = Array.isArray(parsed.assistantMessages) ? parsed.assistantMessages.slice(-12) : [];
     state.assistantModel = parsed.assistantModel || "Ollama";
-    state.activePanel = ["search", "route", "ai", "access"].includes(parsed.activePanel)
+    state.activePanel = ["search", "route", "ai", "access", "settings"].includes(parsed.activePanel)
       ? parsed.activePanel
       : "search";
-    state.topPanelCollapsed =
-      typeof parsed.topPanelCollapsed === "boolean" ? parsed.topPanelCollapsed : window.matchMedia("(max-width: 720px)").matches;
-    state.sheetCollapsed =
-      typeof parsed.sheetCollapsed === "boolean" ? parsed.sheetCollapsed : window.matchMedia("(max-width: 720px)").matches;
+    state.topPanelCollapsed = typeof parsed.topPanelCollapsed === "boolean" ? parsed.topPanelCollapsed : window.matchMedia("(max-width: 720px)").matches;
+    state.sheetCollapsed = typeof parsed.sheetCollapsed === "boolean" ? parsed.sheetCollapsed : window.matchMedia("(max-width: 720px)").matches;
+    state.followCurrentLocation = typeof parsed.followCurrentLocation === "boolean" ? parsed.followCurrentLocation : true;
+    state.captureMode = parsed.captureMode === "server" ? "server" : "local";
+    state.clientId = parsed.clientId || localStorage.getItem(clientIdStorageKey) || "";
     setActiveTarget(parsed.activeTarget === "destination" ? "destination" : "origin");
 
     elements.profileSelect.value = parsed.profile || "walk";
@@ -1631,7 +2274,10 @@ function restoreState() {
     elements.destinationInput.value = defaultDestination.name;
     elements.profileSelect.value = "walk";
   }
+
+  ensureClientId();
 }
+
 
 function normalizeApiBase(value) {
   const raw = (value || "").trim();
@@ -1955,26 +2601,37 @@ function startConnectionMonitor() {
   });
 }
 
-async function requestApiJson(path, options = {}, { quiet = false } = {}) {
+async function requestApiJson(path, options = {}, { quiet = false, timeoutMs = requestTimeoutMs } = {}) {
   let lastError = null;
 
   for (const candidate of buildApiCandidates()) {
     try {
-      const payload = await fetchJson(buildApiUrl(path, candidate), options);
+      const payload = await fetchJson(buildApiUrl(path, candidate), options, { timeoutMs });
       setConnectionState(true, candidate, { quiet });
       return payload;
     } catch (error) {
       lastError = error;
-      if (error && typeof error.status === "number" && error.status >= 400 && error.status < 500 && error.status !== 404) {
+      const isTimeout = Boolean(error && (error.isTimeout || error.name === "AbortError"));
+      const isHttpError = error && typeof error.status === "number";
+
+      if (isTimeout) {
+        setConnectionState(true, candidate, { quiet: true });
+        throw error;
+      }
+      if (isHttpError && error.status !== 404) {
         setConnectionState(true, candidate, { quiet: true });
         throw error;
       }
     }
   }
 
+  if (lastError && (lastError.isTimeout || lastError.name === "AbortError")) {
+    throw lastError;
+  }
   setConnectionState(false, fallbackApiOrigin, { quiet });
-  throw lastError || new Error("ローカルサーバーに接続できません。");
+  throw lastError || new Error("Could not connect to the API server.");
 }
+
 
 function updateBusyState() {
   const busy = state.busyCount > 0;
@@ -1983,17 +2640,27 @@ function updateBusyState() {
   });
 }
 
-async function fetchJson(url, options = {}) {
+async function fetchJson(url, options = {}, { timeoutMs = requestTimeoutMs } = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
-  const response = await fetch(url, {
-    ...options,
-    signal: options.signal || controller.signal,
-  }).finally(() => {
-    clearTimeout(timer);
-  });
-  let payload = null;
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let response;
 
+  try {
+    response = await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (timer) clearTimeout(timer);
+    if (error && error.name === "AbortError") {
+      const timeoutError = new Error("Request timed out.");
+      timeoutError.name = "AbortError";
+      timeoutError.isTimeout = true;
+      throw timeoutError;
+    }
+    throw error;
+  }
+
+  if (timer) clearTimeout(timer);
+
+  let payload = null;
   try {
     payload = await response.json();
   } catch (error) {
@@ -2002,13 +2669,14 @@ async function fetchJson(url, options = {}) {
 
   if (!response.ok) {
     const detail = (payload && payload.detail) || `HTTP ${response.status}`;
-    const error = new Error(detail);
-    error.status = response.status;
-    throw error;
+    const requestError = new Error(detail);
+    requestError.status = response.status;
+    throw requestError;
   }
 
   return payload;
 }
+
 
 function setStatus(message, kind = "info") {
   elements.statusMessage.textContent = message;
