@@ -72,12 +72,14 @@ const state = {
   mapPickMode: null,
   activePanel: "search",
   topPanelCollapsed: window.matchMedia("(max-width: 720px)").matches,
+  globalSearchCollapsed: false,
   sheetCollapsed: window.matchMedia("(max-width: 720px)").matches,
   busyCount: 0,
   clientId: "",
   favorites: [],
   selectedActionPlace: null,
   captureMode: "local",
+  capturePerspective: "car_front",
   captureSession: null,
   globalSearchResults: [],
 };
@@ -91,6 +93,8 @@ const elements = {
   topPanel: document.getElementById("top-panel"),
   topPanelToggleButton: document.getElementById("top-panel-toggle-button"),
   settingsOpenButton: document.getElementById("settings-open-button"),
+  globalSearchShell: document.getElementById("global-search-shell"),
+  globalSearchToggleButton: document.getElementById("global-search-toggle-button"),
   globalSearchInput: document.getElementById("global-search-input"),
   globalSearchCurrentButton: document.getElementById("global-search-current-button"),
   globalSearchClearButton: document.getElementById("global-search-clear-button"),
@@ -155,8 +159,13 @@ const elements = {
   googleLoginStatus: document.getElementById("google-login-status"),
   contributionModeLocal: document.getElementById("contribution-mode-local"),
   contributionModeServer: document.getElementById("contribution-mode-server"),
+  contributionPerspectiveDrive: document.getElementById("contribution-perspective-drive"),
+  contributionPerspectiveWalk: document.getElementById("contribution-perspective-walk"),
   contributionNotes: document.getElementById("contribution-notes"),
+  contributionPreviewShell: document.getElementById("contribution-preview-shell"),
   contributionPreview: document.getElementById("contribution-preview"),
+  contributionOverlayStatus: document.getElementById("contribution-overlay-status"),
+  contributionOverlayTags: document.getElementById("contribution-overlay-tags"),
   contributionStatus: document.getElementById("contribution-status"),
   contributionLog: document.getElementById("contribution-log"),
   contributionStartButton: document.getElementById("contribution-start-button"),
@@ -227,6 +236,25 @@ function renderPanelState() {
   elements.panelSections.forEach((section) => {
     section.classList.toggle("is-active", section.dataset.panelSection === state.activePanel);
   });
+  renderSearchShellState();
+}
+
+function renderSearchShellState() {
+  if (!elements.globalSearchShell) {
+    return;
+  }
+  elements.globalSearchShell.dataset.searchState = state.globalSearchCollapsed ? "collapsed" : "expanded";
+  if (elements.globalSearchToggleButton) {
+    elements.globalSearchToggleButton.textContent = state.globalSearchCollapsed ? "開く" : "隠す";
+  }
+}
+
+function setGlobalSearchCollapsed(value, { persist = true } = {}) {
+  state.globalSearchCollapsed = Boolean(value);
+  renderSearchShellState();
+  if (persist) {
+    saveState();
+  }
 }
 
 function setTopPanelCollapsed(value, { persist = true } = {}) {
@@ -2675,6 +2703,638 @@ async function fetchJson(url, options = {}, { timeoutMs = requestTimeoutMs } = {
   }
 
   return payload;
+}
+
+function renderFollowLocationButtons() {
+  [elements.followLocationButton, elements.followLocationButtonDuplicate].filter(Boolean).forEach((button) => {
+    button.textContent = state.followCurrentLocation ? "追尾 ON" : "追尾 OFF";
+    button.classList.toggle("active-toggle", state.followCurrentLocation);
+  });
+}
+
+function setFollowCurrentLocation(value, { persist = true, status = false } = {}) {
+  state.followCurrentLocation = Boolean(value);
+  renderFollowLocationButtons();
+  if (state.followCurrentLocation) {
+    followCurrentLocationOnMap({ force: true });
+  }
+  if (persist) {
+    saveState();
+  }
+  if (status) {
+    setStatus(state.followCurrentLocation ? "現在地の追尾を有効にしました。" : "現在地の追尾を停止しました。", "info");
+  }
+}
+
+function renderContributionModeButtons() {
+  if (elements.contributionModeLocal) elements.contributionModeLocal.classList.toggle("active-toggle", state.captureMode === "local");
+  if (elements.contributionModeServer) elements.contributionModeServer.classList.toggle("active-toggle", state.captureMode === "server");
+  if (elements.contributionStartButton) elements.contributionStartButton.disabled = Boolean(state.captureSession);
+  if (elements.contributionStopButton) elements.contributionStopButton.disabled = !state.captureSession;
+  renderContributionPerspectiveButtons();
+}
+
+function renderContributionPerspectiveButtons() {
+  if (elements.contributionPerspectiveDrive) {
+    elements.contributionPerspectiveDrive.classList.toggle("active-toggle", state.capturePerspective === "car_front");
+    elements.contributionPerspectiveDrive.disabled = Boolean(state.captureSession);
+  }
+  if (elements.contributionPerspectiveWalk) {
+    elements.contributionPerspectiveWalk.classList.toggle("active-toggle", state.capturePerspective === "walk");
+    elements.contributionPerspectiveWalk.disabled = Boolean(state.captureSession);
+  }
+}
+
+function setContributionMode(mode) {
+  state.captureMode = mode === "server" ? "server" : "local";
+  renderContributionModeButtons();
+  saveState();
+}
+
+function setContributionPerspective(mode) {
+  state.capturePerspective = mode === "walk" ? "walk" : "car_front";
+  renderContributionPerspectiveButtons();
+  clearContributionOverlay();
+  saveState();
+}
+
+function renderContributionOverlay(items = [], { statusText = "" } = {}) {
+  if (elements.contributionPreviewShell) {
+    elements.contributionPreviewShell.classList.toggle("is-detecting", items.length > 0);
+  }
+  if (elements.contributionOverlayStatus) {
+    elements.contributionOverlayStatus.textContent = statusText || (items.length ? `認識中: ${items.length}件` : "認識待機中");
+  }
+  if (!elements.contributionOverlayTags) {
+    return;
+  }
+  elements.contributionOverlayTags.innerHTML = "";
+  items.forEach((item) => {
+    const chip = document.createElement("span");
+    chip.className = "overlay-tag";
+    chip.textContent = typeof item.count === "number" && item.count > 1 ? `${item.label} ×${item.count}` : item.label;
+    elements.contributionOverlayTags.append(chip);
+  });
+}
+
+function clearContributionOverlay() {
+  renderContributionOverlay([], {
+    statusText: state.capturePerspective === "walk" ? "徒歩モード / 認識待機中" : "車前方モード / 認識待機中",
+  });
+}
+
+function summarizeContributionDetections(relevant) {
+  const labelMap = {
+    car: "車",
+    truck: "トラック",
+    bus: "バス",
+    "traffic light": "信号",
+    motorcycle: "バイク",
+    bicycle: "自転車",
+    "stop sign": "停止標識",
+    person: "歩行者",
+  };
+  const counts = new Map();
+  relevant.forEach((item) => {
+    const label = labelMap[item.class] || item.class;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  });
+  return Array.from(counts.entries()).map(([label, count]) => ({ label, count }));
+}
+
+async function performGlobalSearch(query) {
+  const text = (query || "").trim();
+  if (!text) {
+    state.globalSearchResults = [];
+    renderGlobalSearchResults();
+    return;
+  }
+  setGlobalSearchCollapsed(false, { persist: false });
+  try {
+    const params = new URLSearchParams({ q: text, limit: "8" });
+    if (state.currentLocation) {
+      params.set("near_lat", String(state.currentLocation.lat));
+      params.set("near_lon", String(state.currentLocation.lon));
+    }
+    const data = await requestApiJson(`/api/places/search?${params.toString()}`, {}, { quiet: true, timeoutMs: 12000 });
+    state.globalSearchResults = data.items || [];
+    renderGlobalSearchResults();
+  } catch (error) {
+    console.warn(error);
+    state.globalSearchResults = [];
+    renderGlobalSearchResults();
+  }
+}
+
+async function detectContributionFrame(session) {
+  if (!session || !session.detector || !elements.contributionPreview || elements.contributionPreview.readyState < 2) return;
+  try {
+    const predictions = await session.detector.detect(elements.contributionPreview, 12);
+    const relevant = predictions
+      .filter((item) => ["car", "truck", "bus", "traffic light", "motorcycle", "bicycle", "stop sign", "person"].includes(item.class))
+      .map((item) => ({
+        class: item.class,
+        score: Number(item.score.toFixed(3)),
+        bbox: item.bbox.map((value) => Number(value.toFixed(1))),
+      }));
+    session.detections.push({
+      at: new Date().toISOString(),
+      items: relevant,
+      car_count: relevant.filter((item) => ["car", "truck", "bus", "motorcycle"].includes(item.class)).length,
+      traffic_signal_count: relevant.filter((item) => item.class === "traffic light").length,
+      road_width_estimate_m: null,
+      perspective: state.capturePerspective,
+    });
+    const summary = summarizeContributionDetections(relevant);
+    renderContributionOverlay(summary, {
+      statusText: summary.length ? `認識中: ${summary.map((item) => `${item.label}${item.count > 1 ? `×${item.count}` : ""}`).join(", ")}` : "認識待機中",
+    });
+    if (relevant.length) appendContributionLog(`検出: ${summary.map((item) => `${item.label}${item.count > 1 ? `x${item.count}` : ""}`).join(", ")}`);
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+async function buildContributionArchive(session) {
+  const JSZip = await ensureJSZipLib();
+  const zip = new JSZip();
+  const metadata = {
+    client_id: state.clientId,
+    mode: state.captureMode,
+    capture_perspective: state.capturePerspective,
+    started_at: session.startedAt,
+    stopped_at: new Date().toISOString(),
+    notes: session.notes || "",
+    route: state.route ? { summary: state.route.summary, highlights: state.route.highlights } : null,
+    current_location: state.currentLocation,
+    detection_note: "road_width_estimate_m is not implemented yet, so it is null.",
+  };
+  zip.file("metadata.json", JSON.stringify(metadata, null, 2));
+  zip.file("positions.json", JSON.stringify(session.positions, null, 2));
+  zip.file("orientation.json", JSON.stringify(session.orientations, null, 2));
+  zip.file("detections.json", JSON.stringify(session.detections, null, 2));
+  if (session.videoBlob) {
+    zip.file("video.webm", session.videoBlob);
+  }
+  return zip.generateAsync({ type: "blob" });
+}
+
+async function startContributionCapture() {
+  ensureClientId();
+  if (state.captureSession) return;
+  if (!window.isSecureContext && !isLoopbackHost(location.hostname)) {
+    renderContributionStatus("協力モードのカメラ利用は HTTPS または localhost でのみ使えます。", "warning");
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+    renderContributionStatus("この端末ではカメラ記録に対応していません。", "error");
+    return;
+  }
+
+  try {
+    const videoConstraints =
+      state.capturePerspective === "walk"
+        ? { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } }
+        : { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } };
+    const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    const recorder = new MediaRecorder(stream, {
+      mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm",
+    });
+    const chunks = [];
+    const session = {
+      stream,
+      recorder,
+      chunks,
+      positions: [],
+      orientations: [],
+      detections: [],
+      startedAt: new Date().toISOString(),
+      notes: elements.contributionNotes ? elements.contributionNotes.value.trim() : "",
+      videoBlob: null,
+      stopPromise: null,
+      detector: null,
+      perspective: state.capturePerspective,
+    };
+
+    session.stopPromise = new Promise((resolve) => {
+      recorder.addEventListener(
+        "stop",
+        () => {
+          session.videoBlob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
+          resolve();
+        },
+        { once: true },
+      );
+    });
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data && event.data.size) chunks.push(event.data);
+    });
+    recorder.start(1000);
+
+    if (elements.contributionPreview) {
+      elements.contributionPreview.srcObject = stream;
+      elements.contributionPreview.play().catch(() => {});
+    }
+    clearContributionOverlay();
+
+    if (navigator.geolocation) {
+      contributionPositionWatchId = navigator.geolocation.watchPosition(
+        (position) => {
+          session.positions.push({
+            at: new Date().toISOString(),
+            lat: Number(position.coords.latitude.toFixed(6)),
+            lon: Number(position.coords.longitude.toFixed(6)),
+            accuracy_m: Number((position.coords.accuracy || 0).toFixed(1)),
+            speed_mps: position.coords.speed,
+          });
+        },
+        (error) => console.warn(error),
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
+      );
+    }
+
+    contributionOrientationHandler = (event) => {
+      const heading = extractHeadingFromOrientation(event);
+      session.orientations.push({
+        at: new Date().toISOString(),
+        heading,
+        alpha: typeof event.alpha === "number" ? Number(event.alpha.toFixed(2)) : null,
+        beta: typeof event.beta === "number" ? Number(event.beta.toFixed(2)) : null,
+        gamma: typeof event.gamma === "number" ? Number(event.gamma.toFixed(2)) : null,
+      });
+    };
+    window.addEventListener("deviceorientation", contributionOrientationHandler, true);
+    window.addEventListener("deviceorientationabsolute", contributionOrientationHandler, true);
+
+    state.captureSession = session;
+    renderContributionModeButtons();
+    renderContributionStatus(
+      state.capturePerspective === "walk" ? "徒歩モードで記録を開始しました。" : "車前方モードで記録を開始しました。",
+      "success",
+    );
+    appendContributionLog(state.capturePerspective === "walk" ? "徒歩モードで記録開始" : "車前方モードで記録開始");
+
+    ensureContributionDetector()
+      .then((detector) => {
+        session.detector = detector;
+        if (detector) {
+          appendContributionLog("物体認識モデルを読み込みました。");
+          clearContributionOverlay();
+        }
+      })
+      .catch((error) => {
+        console.warn(error);
+        appendContributionLog("物体認識モデルの読み込みに失敗しました。");
+      });
+
+    contributionDetectionTimer = setInterval(() => {
+      void detectContributionFrame(session);
+    }, state.capturePerspective === "walk" ? 1200 : 1800);
+  } catch (error) {
+    console.error(error);
+    renderContributionStatus(error.message || "協力モードの開始に失敗しました。", "error");
+  }
+}
+
+async function finalizeContributionCapture() {
+  const session = state.captureSession;
+  if (!session) return;
+
+  renderContributionStatus("アーカイブを生成しています。", "info");
+  stopContributionSensors();
+  if (session.recorder && session.recorder.state !== "inactive") session.recorder.stop();
+  if (session.stream) session.stream.getTracks().forEach((track) => track.stop());
+  await session.stopPromise;
+
+  const archiveBlob = await buildContributionArchive(session);
+  const filename = `contribution-${new Date().toISOString().replaceAll(":", "-")}.zip`;
+  try {
+    if (state.captureMode === "server") {
+      const formData = new FormData();
+      formData.append("client_id", state.clientId);
+      formData.append("mode", state.captureMode);
+      formData.append("metadata", JSON.stringify({ notes: session.notes || "", started_at: session.startedAt, capture_perspective: state.capturePerspective }, null, 2));
+      formData.append("file", archiveBlob, filename);
+      const response = await requestApiJson("/api/contributions/upload", { method: "POST", body: formData }, { timeoutMs: contributionUploadTimeoutMs });
+      renderContributionStatus(`サーバーへ送信しました: ${response.filename}`, "success", response.path || "");
+    } else {
+      downloadBlob(archiveBlob, filename);
+      renderContributionStatus("ローカルに ZIP 保存しました。", "success");
+    }
+  } catch (error) {
+    console.error(error);
+    downloadBlob(archiveBlob, filename);
+    renderContributionStatus("サーバー送信に失敗したため、ローカル保存に切り替えました。", "warning", error.message || "");
+  } finally {
+    if (elements.contributionPreview) elements.contributionPreview.srcObject = null;
+    state.captureSession = null;
+    renderContributionModeButtons();
+    clearContributionOverlay();
+  }
+}
+
+function saveState() {
+  const payload = {
+    origin: state.origin,
+    destination: state.destination,
+    route: state.route,
+    currentLocation: state.currentLocation,
+    networkInfo: state.networkInfo,
+    profile: elements.profileSelect.value,
+    preferences: elements.preferencesInput.value,
+    activeTarget: state.activeTarget,
+    customApiBase: state.customApiBase,
+    assistantMessages: state.assistantMessages,
+    assistantModel: state.assistantModel,
+    activePanel: state.activePanel,
+    topPanelCollapsed: state.topPanelCollapsed,
+    globalSearchCollapsed: state.globalSearchCollapsed,
+    sheetCollapsed: state.sheetCollapsed,
+    clientId: state.clientId,
+    followCurrentLocation: state.followCurrentLocation,
+    captureMode: state.captureMode,
+    capturePerspective: state.capturePerspective,
+  };
+
+  localStorage.setItem(storageKey, JSON.stringify(payload));
+}
+
+function restoreState() {
+  const raw = localStorage.getItem(storageKey);
+  if (!raw) {
+    elements.originInput.value = defaultOrigin.name;
+    elements.destinationInput.value = defaultDestination.name;
+    elements.profileSelect.value = "walk";
+    ensureClientId();
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    state.currentLocation = parsed.currentLocation || null;
+    state.route = parsed.route || null;
+    state.networkInfo = parsed.networkInfo || null;
+    state.customApiBase = normalizeApiBase(parsed.customApiBase || "");
+    state.assistantMessages = Array.isArray(parsed.assistantMessages) ? parsed.assistantMessages.slice(-12) : [];
+    state.assistantModel = parsed.assistantModel || "Ollama";
+    state.activePanel = ["search", "route", "ai", "access", "settings"].includes(parsed.activePanel) ? parsed.activePanel : "search";
+    state.topPanelCollapsed = typeof parsed.topPanelCollapsed === "boolean" ? parsed.topPanelCollapsed : window.matchMedia("(max-width: 720px)").matches;
+    state.globalSearchCollapsed = typeof parsed.globalSearchCollapsed === "boolean" ? parsed.globalSearchCollapsed : false;
+    state.sheetCollapsed = typeof parsed.sheetCollapsed === "boolean" ? parsed.sheetCollapsed : window.matchMedia("(max-width: 720px)").matches;
+    state.followCurrentLocation = typeof parsed.followCurrentLocation === "boolean" ? parsed.followCurrentLocation : true;
+    state.captureMode = parsed.captureMode === "server" ? "server" : "local";
+    state.capturePerspective = parsed.capturePerspective === "walk" ? "walk" : "car_front";
+    state.clientId = parsed.clientId || localStorage.getItem(clientIdStorageKey) || "";
+    setActiveTarget(parsed.activeTarget === "destination" ? "destination" : "origin");
+
+    elements.profileSelect.value = parsed.profile || "walk";
+    elements.preferencesInput.value = parsed.preferences || "";
+
+    if (parsed.origin) {
+      elements.originInput.value = parsed.origin.name;
+      choosePlace("origin", parsed.origin, { clearRoute: false, persist: false, fitMap: false });
+    } else {
+      elements.originInput.value = defaultOrigin.name;
+    }
+    if (parsed.destination) {
+      elements.destinationInput.value = parsed.destination.name;
+      choosePlace("destination", parsed.destination, { clearRoute: false, persist: false, fitMap: false });
+    } else {
+      elements.destinationInput.value = defaultDestination.name;
+    }
+  } catch (error) {
+    console.warn(error);
+    localStorage.removeItem(storageKey);
+    elements.originInput.value = defaultOrigin.name;
+    elements.destinationInput.value = defaultDestination.name;
+    elements.profileSelect.value = "walk";
+  }
+
+  ensureClientId();
+}
+
+function wireEvents() {
+  if (elements.sheetToggleButton) {
+    elements.sheetToggleButton.addEventListener("click", () => setSheetCollapsed(!state.sheetCollapsed));
+  }
+  if (elements.topPanelToggleButton) {
+    elements.topPanelToggleButton.addEventListener("click", () => setTopPanelCollapsed(!state.topPanelCollapsed));
+  }
+  if (elements.settingsOpenButton) {
+    elements.settingsOpenButton.addEventListener("click", () => switchPanel("settings", { expand: true }));
+  }
+  if (elements.globalSearchToggleButton) {
+    elements.globalSearchToggleButton.addEventListener("click", () => setGlobalSearchCollapsed(!state.globalSearchCollapsed));
+  }
+
+  elements.panelTabs.forEach((button) => {
+    button.addEventListener("click", () => switchPanel(button.dataset.panelTab, { expand: true }));
+  });
+
+  if (elements.globalSearchInput) {
+    elements.globalSearchInput.addEventListener("input", () => scheduleGlobalSearch(elements.globalSearchInput.value));
+    elements.globalSearchInput.addEventListener("focus", () => {
+      setTopPanelCollapsed(false, { persist: false });
+      setGlobalSearchCollapsed(false, { persist: false });
+    });
+    elements.globalSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void performGlobalSearch(elements.globalSearchInput.value);
+      }
+    });
+  }
+  if (elements.globalSearchCurrentButton) {
+    elements.globalSearchCurrentButton.addEventListener("click", async () => {
+      setGlobalSearchCollapsed(false, { persist: false });
+      await useCurrentLocation();
+      if (state.currentLocation) {
+        const currentPlace = buildCurrentLocationPlace(state.currentLocation);
+        if (elements.globalSearchInput) {
+          elements.globalSearchInput.value = currentPlace.name;
+        }
+        state.globalSearchResults = [currentPlace];
+        renderGlobalSearchResults();
+        openPlaceActionSheet(currentPlace);
+      }
+    });
+  }
+  if (elements.globalSearchClearButton) {
+    elements.globalSearchClearButton.addEventListener("click", () => {
+      if (elements.globalSearchInput) {
+        elements.globalSearchInput.value = "";
+      }
+      state.globalSearchResults = [];
+      renderGlobalSearchResults();
+      closePlaceActionSheet();
+    });
+  }
+
+  if (elements.applyApiButton) elements.applyApiButton.addEventListener("click", applyApiBaseFromInput);
+  if (elements.clearApiButton) elements.clearApiButton.addEventListener("click", clearCustomApiBase);
+  if (elements.apiBaseInput) {
+    elements.apiBaseInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyApiBaseFromInput();
+      }
+    });
+  }
+  if (elements.reconnectButton) {
+    elements.reconnectButton.addEventListener("click", () => void detectApiBase({ quiet: false, force: true }));
+  }
+
+  document.getElementById("origin-search-button").addEventListener("click", () => void searchPlaces("origin"));
+  document.getElementById("destination-search-button").addEventListener("click", () => void searchPlaces("destination"));
+  if (elements.mobileSearchButton) elements.mobileSearchButton.addEventListener("click", () => void searchPlaces(state.activeTarget));
+  if (elements.mobileCurrentButton) elements.mobileCurrentButton.addEventListener("click", () => void useCurrentLocation());
+  if (elements.mobileOriginTargetButton) elements.mobileOriginTargetButton.addEventListener("click", () => setActiveTarget("origin"));
+  if (elements.mobileDestinationTargetButton) elements.mobileDestinationTargetButton.addEventListener("click", () => setActiveTarget("destination"));
+  document.getElementById("origin-current-button").addEventListener("click", () => void useCurrentLocation());
+  document.getElementById("parse-button").addEventListener("click", () => void previewPreferences());
+  document.getElementById("route-button").addEventListener("click", () => void requestRoute());
+  document.getElementById("swap-button").addEventListener("click", swapPlaces);
+  document.getElementById("clear-route-button").addEventListener("click", () => clearRoute());
+  document.getElementById("download-route-button").addEventListener("click", downloadRoute);
+
+  if (elements.assistantSendButton) elements.assistantSendButton.addEventListener("click", () => void sendAssistantMessage());
+  if (elements.assistantInput) {
+    elements.assistantInput.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        void sendAssistantMessage();
+      }
+    });
+  }
+
+  elements.startNavButton.addEventListener("click", toggleNavigation);
+  elements.prevStepButton.addEventListener("click", previousStep);
+  elements.nextStepButton.addEventListener("click", nextStep);
+  if (elements.followLocationButton) elements.followLocationButton.addEventListener("click", () => setFollowCurrentLocation(!state.followCurrentLocation, { status: true }));
+  if (elements.followLocationButtonDuplicate) elements.followLocationButtonDuplicate.addEventListener("click", () => setFollowCurrentLocation(!state.followCurrentLocation, { status: true }));
+
+  elements.pickOriginButton.addEventListener("click", () => setMapPickMode("origin"));
+  elements.pickDestinationButton.addEventListener("click", () => setMapPickMode("destination"));
+  elements.stopPickingButton.addEventListener("click", () => setMapPickMode(null));
+
+  elements.originInput.addEventListener("focus", () => { setActiveTarget("origin"); focusPanel("search"); });
+  elements.destinationInput.addEventListener("focus", () => { setActiveTarget("destination"); focusPanel("search"); });
+  elements.originInput.addEventListener("keydown", (event) => { if (event.key === "Enter") void searchPlaces("origin"); });
+  elements.destinationInput.addEventListener("keydown", (event) => { if (event.key === "Enter") void searchPlaces("destination"); });
+
+  if (elements.mobileSearchInput) {
+    elements.mobileSearchInput.addEventListener("input", () => syncActiveTargetInputFromMobile());
+    elements.mobileSearchInput.addEventListener("focus", () => {
+      focusPanel("search");
+      setTopPanelCollapsed(false, { persist: false });
+    });
+    elements.mobileSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void searchPlaces(state.activeTarget);
+      }
+    });
+  }
+
+  elements.profileSelect.addEventListener("change", () => { schedulePreferencePreview(); saveState(); });
+  elements.preferencesInput.addEventListener("input", () => { schedulePreferencePreview(); saveState(); });
+
+  if (elements.refreshFavoritesButton) elements.refreshFavoritesButton.addEventListener("click", () => void refreshFavorites());
+  if (elements.googleLoginButton) elements.googleLoginButton.addEventListener("click", handleGoogleLoginClick);
+  if (elements.contributionModeLocal) elements.contributionModeLocal.addEventListener("click", () => setContributionMode("local"));
+  if (elements.contributionModeServer) elements.contributionModeServer.addEventListener("click", () => setContributionMode("server"));
+  if (elements.contributionPerspectiveDrive) elements.contributionPerspectiveDrive.addEventListener("click", () => setContributionPerspective("car_front"));
+  if (elements.contributionPerspectiveWalk) elements.contributionPerspectiveWalk.addEventListener("click", () => setContributionPerspective("walk"));
+  if (elements.contributionStartButton) elements.contributionStartButton.addEventListener("click", () => void startContributionCapture());
+  if (elements.contributionStopButton) elements.contributionStopButton.addEventListener("click", () => void finalizeContributionCapture());
+
+  if (elements.placeActionBackdrop) elements.placeActionBackdrop.addEventListener("click", closePlaceActionSheet);
+  if (elements.actionCloseButton) elements.actionCloseButton.addEventListener("click", closePlaceActionSheet);
+  if (elements.actionSetOriginButton) {
+    elements.actionSetOriginButton.addEventListener("click", () => {
+      if (!state.selectedActionPlace) return;
+      elements.originInput.value = state.selectedActionPlace.name;
+      choosePlace("origin", state.selectedActionPlace);
+      closePlaceActionSheet();
+      setStatus("出発地を更新しました。", "success");
+    });
+  }
+  if (elements.actionSetDestinationButton) {
+    elements.actionSetDestinationButton.addEventListener("click", () => {
+      if (!state.selectedActionPlace) return;
+      elements.destinationInput.value = state.selectedActionPlace.name;
+      choosePlace("destination", state.selectedActionPlace);
+      closePlaceActionSheet();
+      setStatus("目的地を更新しました。", "success");
+    });
+  }
+  if (elements.actionFavoriteButton) elements.actionFavoriteButton.addEventListener("click", () => { if (state.selectedActionPlace) void saveFavoritePlace(state.selectedActionPlace); });
+  if (elements.actionRouteButton) elements.actionRouteButton.addEventListener("click", () => { if (state.selectedActionPlace) void routeToPlace(state.selectedActionPlace, { startNavigation: false }); });
+  if (elements.actionNavigateButton) elements.actionNavigateButton.addEventListener("click", () => { if (state.selectedActionPlace) void routeToPlace(state.selectedActionPlace, { startNavigation: true }); });
+
+  map.on("click", handleMapClick);
+  map.on("dragstart", () => {
+    if (state.navigationStarted && state.followCurrentLocation) {
+      setFollowCurrentLocation(false, { status: true });
+    }
+  });
+}
+
+async function initialize() {
+  restoreState();
+  ensureClientId();
+
+  if (queryApiBase) {
+    try {
+      applyCustomApiBase(queryApiBase, { persist: true, reconnect: false, quiet: true });
+    } catch (error) {
+      console.warn(error);
+      syncApiBaseInput();
+    }
+  } else {
+    syncApiBaseInput();
+  }
+
+  setStatus("Checking API connection...", "info");
+  renderPanelState();
+  renderFollowLocationButtons();
+  renderContributionModeButtons();
+  renderContributionPerspectiveButtons();
+  clearContributionOverlay();
+  renderGlobalSearchResults();
+  renderFavorites();
+
+  await detectApiBase({ quiet: false, force: true });
+  startConnectionMonitor();
+  await loadAppInfo();
+  await loadNetworkInfo();
+  await refreshFavorites({ quiet: true });
+
+  if (!state.origin) choosePlace("origin", defaultOrigin, { clearRoute: false, persist: false });
+  if (!state.destination) choosePlace("destination", defaultDestination, { clearRoute: false, persist: false });
+
+  if (!elements.preferencesInput.value.trim()) {
+    elements.preferencesInput.value = "坂を避ける / 信号が少ないルート";
+  }
+
+  await previewPreferences({ quiet: true });
+  syncCurrentLocationMarker();
+
+  if (state.route && state.route.path && state.route.path.length) {
+    applyRoute(state.route, { persist: false, statusText: "Saved route restored." });
+  } else {
+    resetRouteOutput();
+    fitToVisibleLayers();
+    setStatus("Ready.", "success");
+  }
+
+  renderMapPickState();
+  updateBusyState();
+  renderConnectionState();
+  renderNetworkInfo();
+  renderAssistantPanel();
+  renderFavoriteCount();
+  saveState();
 }
 
 
