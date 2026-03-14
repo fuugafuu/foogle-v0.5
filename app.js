@@ -1,4 +1,4 @@
-const storageKey = "ai-map-demo-state-v3";
+const storageKey = "ai-map-demo-state-v4";
 const defaultCenter = [35.681236, 139.767125];
 const fallbackApiOrigin = "http://127.0.0.1:8000";
 const queryApiBase = new URLSearchParams(location.search).get("api");
@@ -31,16 +31,19 @@ const fallbackAppInfo = {
   version: "0.5.0",
   engine: "osrm-fallback",
   engine_mode: "local-pc",
+  public_api_base_url: null,
   supported_profiles: ["walk", "bicycle", "car"],
-  sample_place_queries: ["東京駅", "皇居", "新宿駅", "大阪城", "近くのコンビニ"],
+  sample_place_queries: ["東京駅", "皇居", "新宿駅", "大阪城", "近くのコンビニ", "渋谷スクランブル交差点"],
   sample_preferences: ["最短", "坂を避ける", "信号が少ない", "景色がいい", "ランニング向け"],
   supported_features: [
     "地点候補検索",
+    "OSMジオコーダ検索",
     "要望解析",
     "デモルート生成",
     "地図クリック選択",
     "JSONエクスポート",
     "ブラウザ保存",
+    "LAN共有",
   ],
 };
 
@@ -54,12 +57,15 @@ const state = {
   destination: null,
   route: null,
   currentLocation: null,
+  networkInfo: null,
   parsedPreferences: null,
   assistantMessages: [],
   assistantModel: "Ollama",
   navigationStarted: false,
   navigationIndex: 0,
   mapPickMode: null,
+  activePanel: "search",
+  sheetCollapsed: window.matchMedia("(max-width: 720px)").matches,
   busyCount: 0,
 };
 
@@ -69,6 +75,10 @@ const elements = {
   applyApiButton: document.getElementById("apply-api-button"),
   clearApiButton: document.getElementById("clear-api-button"),
   reconnectButton: document.getElementById("reconnect-button"),
+  sheet: document.getElementById("control-sheet"),
+  sheetToggleButton: document.getElementById("sheet-toggle-button"),
+  panelTabs: Array.from(document.querySelectorAll("[data-panel-tab]")),
+  panelSections: Array.from(document.querySelectorAll("[data-panel-section]")),
   originInput: document.getElementById("origin-input"),
   destinationInput: document.getElementById("destination-input"),
   profileSelect: document.getElementById("profile-select"),
@@ -77,6 +87,9 @@ const elements = {
   statusMessage: document.getElementById("status-message"),
   mapPickStatus: document.getElementById("map-pick-status"),
   activeTargetLabel: document.getElementById("active-target-label"),
+  networkSummary: document.getElementById("network-summary"),
+  networkLinks: document.getElementById("network-links"),
+  accessHelper: document.getElementById("access-helper"),
   assistantModelLabel: document.getElementById("assistant-model-label"),
   assistantMessages: document.getElementById("assistant-messages"),
   assistantInput: document.getElementById("assistant-input"),
@@ -122,10 +135,140 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 let previewTimer = null;
 let routeLayer = null;
 let apiHeartbeatTimer = null;
+let currentLocationWatchId = null;
+let orientationTrackingEnabled = false;
 const markers = {
   origin: null,
   destination: null,
+  currentLocation: null,
 };
+
+function isSmallViewport() {
+  return window.matchMedia("(max-width: 720px)").matches;
+}
+
+function renderPanelState() {
+  if (elements.sheet) {
+    elements.sheet.dataset.sheetState = state.sheetCollapsed ? "collapsed" : "expanded";
+  }
+  if (elements.sheetToggleButton) {
+    elements.sheetToggleButton.textContent = state.sheetCollapsed ? "展開" : "収納";
+  }
+  elements.panelTabs.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.panelTab === state.activePanel);
+  });
+  elements.panelSections.forEach((section) => {
+    section.classList.toggle("is-active", section.dataset.panelSection === state.activePanel);
+  });
+}
+
+function setSheetCollapsed(value, { persist = true } = {}) {
+  state.sheetCollapsed = Boolean(value);
+  renderPanelState();
+  if (persist) {
+    saveState();
+  }
+}
+
+function switchPanel(panel, { expand = false, persist = true } = {}) {
+  const nextPanel = ["search", "route", "ai", "access"].includes(panel) ? panel : "search";
+  state.activePanel = nextPanel;
+  if (expand) {
+    state.sheetCollapsed = false;
+  }
+  renderPanelState();
+  if (persist) {
+    saveState();
+  }
+}
+
+function focusPanel(panel) {
+  switchPanel(panel, { expand: true, persist: true });
+}
+
+function formatBaseLabel(base) {
+  return String(base || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+async function copyText(value) {
+  if (!value || !navigator.clipboard) {
+    return false;
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch (error) {
+    console.warn(error);
+    return false;
+  }
+}
+
+function renderNetworkInfo() {
+  if (elements.networkSummary) {
+    if (state.apiAvailable) {
+      const networkMode = state.appInfo.engine_mode === "shared" ? "共有モード" : "ローカルPCモード";
+      const suffix = state.networkInfo && state.networkInfo.public_api_base_url ? " / 公開URLあり" : "";
+      elements.networkSummary.textContent = `接続中: ${formatBaseLabel(state.apiBase)} / ${networkMode}${suffix}`;
+    } else {
+      elements.networkSummary.textContent = "未接続です。LAN URL か公開 API URL を接続先に指定してください。";
+    }
+  }
+
+  if (elements.accessHelper) {
+    const tips = (state.networkInfo && state.networkInfo.tips) || [];
+    elements.accessHelper.textContent = tips.join(" ");
+  }
+
+  if (!elements.networkLinks) {
+    return;
+  }
+
+  elements.networkLinks.innerHTML = "";
+
+  const localUrls = (state.networkInfo && state.networkInfo.local_urls) || [];
+  localUrls.forEach((url) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip button-chip";
+    button.textContent = formatBaseLabel(url);
+    button.title = url;
+    button.addEventListener("click", async () => {
+      const copied = await copyText(url);
+      setStatus(copied ? `LAN URL をコピーしました: ${url}` : `LAN URL: ${url}`, copied ? "success" : "info");
+    });
+    elements.networkLinks.append(button);
+  });
+
+  if (state.networkInfo && state.networkInfo.public_api_base_url) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip button-chip";
+    button.textContent = `公開API ${formatBaseLabel(state.networkInfo.public_api_base_url)}`;
+    button.title = state.networkInfo.public_api_base_url;
+    button.addEventListener("click", () => {
+      elements.apiBaseInput.value = state.networkInfo.public_api_base_url;
+      applyApiBaseFromInput();
+    });
+    elements.networkLinks.append(button);
+  }
+}
+
+async function loadNetworkInfo() {
+  if (!state.apiAvailable) {
+    state.networkInfo = null;
+    renderNetworkInfo();
+    return;
+  }
+
+  try {
+    state.networkInfo = await requestApiJson("/api/network-info", {}, { quiet: true });
+  } catch (error) {
+    console.warn(error);
+    state.networkInfo = null;
+  }
+
+  renderNetworkInfo();
+}
 
 wireEvents();
 initialize().catch((error) => {
@@ -134,6 +277,12 @@ initialize().catch((error) => {
 });
 
 function wireEvents() {
+  if (elements.sheetToggleButton) {
+    elements.sheetToggleButton.addEventListener("click", () => setSheetCollapsed(!state.sheetCollapsed));
+  }
+  elements.panelTabs.forEach((button) => {
+    button.addEventListener("click", () => switchPanel(button.dataset.panelTab, { expand: true }));
+  });
   if (elements.applyApiButton) {
     elements.applyApiButton.addEventListener("click", applyApiBaseFromInput);
   }
@@ -185,8 +334,14 @@ function wireEvents() {
   elements.pickDestinationButton.addEventListener("click", () => setMapPickMode("destination"));
   elements.stopPickingButton.addEventListener("click", () => setMapPickMode(null));
 
-  elements.originInput.addEventListener("focus", () => setActiveTarget("origin"));
-  elements.destinationInput.addEventListener("focus", () => setActiveTarget("destination"));
+  elements.originInput.addEventListener("focus", () => {
+    setActiveTarget("origin");
+    focusPanel("search");
+  });
+  elements.destinationInput.addEventListener("focus", () => {
+    setActiveTarget("destination");
+    focusPanel("search");
+  });
 
   elements.originInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -225,9 +380,11 @@ async function initialize() {
   }
 
   setStatus("API接続先を確認しています。", "info");
+  renderPanelState();
   await detectApiBase({ quiet: false, force: true });
   startConnectionMonitor();
   await loadAppInfo();
+  await loadNetworkInfo();
   if (!state.origin) {
     choosePlace("origin", defaultOrigin, { clearRoute: false, persist: false });
   }
@@ -240,6 +397,7 @@ async function initialize() {
   }
 
   await previewPreferences({ quiet: true });
+  syncCurrentLocationMarker();
 
   if (state.route && state.route.path && state.route.path.length) {
     applyRoute(state.route, { persist: false, statusText: "前回のルートを復元しました。" });
@@ -252,6 +410,7 @@ async function initialize() {
   renderMapPickState();
   updateBusyState();
   renderConnectionState();
+  renderNetworkInfo();
   renderAssistantPanel();
   saveState();
 }
@@ -263,7 +422,7 @@ async function loadAppInfo() {
     console.warn(error);
     state.appInfo = fallbackAppInfo;
     if (!state.apiAvailable) {
-      setStatus("ローカルサーバー待機中です。起動後に自動再接続します。", "warning");
+      setStatus("接続先がまだ見つかりません。接続タブで LAN URL または公開 URL を確認してください。", "warning");
     }
   }
 
@@ -273,6 +432,16 @@ async function loadAppInfo() {
 function renderAppInfo() {
   elements.engineWarning.textContent =
     `ルートエンジン: ${state.appInfo.engine} / バージョン ${state.appInfo.version}`;
+
+  if (state.appInfo.public_api_base_url && !(state.networkInfo && state.networkInfo.public_api_base_url)) {
+    state.networkInfo = {
+      ...(state.networkInfo || {}),
+      local_ips: (state.networkInfo && state.networkInfo.local_ips) || [],
+      local_urls: (state.networkInfo && state.networkInfo.local_urls) || [],
+      public_api_base_url: state.appInfo.public_api_base_url,
+      tips: (state.networkInfo && state.networkInfo.tips) || [],
+    };
+  }
 
   renderChipButtons(
     elements.samplePlaceChips,
@@ -287,6 +456,7 @@ function renderAppInfo() {
   renderChipButtons(elements.samplePreferenceChips, state.appInfo.sample_preferences, applyPreferenceTemplate);
   renderStaticChips(elements.featureChips, state.appInfo.supported_features, "muted-chip");
   renderAssistantPanel();
+  renderNetworkInfo();
 }
 
 function renderChipButtons(container, values, onClick) {
@@ -422,6 +592,7 @@ async function applyAssistantResponse(response) {
       persist: false,
       statusText: "AIがルートを更新しました。",
     });
+    switchPanel("route", { expand: true, persist: false });
   } else {
     saveState();
   }
@@ -446,6 +617,7 @@ async function sendAssistantMessage(prefilledMessage = null) {
 
   pushAssistantMessage("user", message);
   elements.assistantInput.value = "";
+  focusPanel("ai");
   setStatus("AI が条件を整理しています。", "info");
 
   try {
@@ -499,6 +671,7 @@ function selectedForTarget(target) {
 
 async function searchPlaces(target, { query = null, autoSelectFirst = false } = {}) {
   setActiveTarget(target);
+  switchPanel("search", { expand: true, persist: false });
   const input = inputForTarget(target);
   const searchText = (query !== null && query !== undefined ? query : input.value).trim();
 
@@ -511,7 +684,7 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
   setStatus(`${target === "origin" ? "出発地" : "目的地"}を検索しています。`, "info");
 
   try {
-    const params = new URLSearchParams({ q: searchText, limit: "6" });
+    const params = new URLSearchParams({ q: searchText, limit: "8" });
     if (state.currentLocation) {
       params.set("near_lat", String(state.currentLocation.lat));
       params.set("near_lon", String(state.currentLocation.lon));
@@ -522,11 +695,13 @@ async function searchPlaces(target, { query = null, autoSelectFirst = false } = 
 
     if (!items.length) {
       renderResults(target, []);
+      switchPanel("search", { expand: true, persist: false });
       setStatus("候補が見つかりませんでした。", "warning");
       return;
     }
 
     renderResults(target, items);
+    switchPanel("search", { expand: true, persist: false });
 
     if (autoSelectFirst) {
       choosePlace(target, items[0]);
@@ -566,6 +741,7 @@ function renderResults(target, items) {
     button.addEventListener("click", () => {
       choosePlace(target, item);
       clearResults(target);
+      switchPanel("route", { expand: true, persist: false });
       setStatus(`${target === "origin" ? "出発地" : "目的地"}を設定しました。`, "success");
     });
     container.append(button);
@@ -574,6 +750,9 @@ function renderResults(target, items) {
 
 function buildPlaceMeta(place) {
   const parts = [];
+  if (place.source === "nominatim") {
+    parts.push("OSM検索");
+  }
   if (place.distance_from_near_km !== null && place.distance_from_near_km !== undefined) {
     parts.push(`現在地から ${place.distance_from_near_km} km`);
   }
@@ -638,6 +817,100 @@ function renderSelectedPlace(target, place) {
   `;
 }
 
+function buildCurrentLocationPlace(locationState = state.currentLocation) {
+  if (!locationState) {
+    return null;
+  }
+
+  return {
+    name: "現在地",
+    category: "current_location",
+    description: "ブラウザの位置情報から取得",
+    lat: Number(locationState.lat),
+    lon: Number(locationState.lon),
+    source: "browser",
+  };
+}
+
+function isCurrentLocationPlace(place) {
+  if (!place) {
+    return false;
+  }
+
+  return (
+    place.category === "current" ||
+    place.category === "current_location" ||
+    place.source === "geolocation" ||
+    place.source === "browser" ||
+    place.name === "現在地"
+  );
+}
+
+function normalizeHeading(value) {
+  const heading = Number(value);
+  if (!Number.isFinite(heading)) {
+    return null;
+  }
+
+  return ((heading % 360) + 360) % 360;
+}
+
+function buildCurrentLocationIcon() {
+  return L.divIcon({
+    className: "current-location-icon",
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
+    html: `
+      <div class="current-location-marker">
+        <span class="current-location-beacon"></span>
+        <span class="current-location-heading">
+          <span class="current-location-arrow"></span>
+        </span>
+        <span class="current-location-dot"></span>
+      </div>
+    `,
+  });
+}
+
+function syncCurrentLocationMarker({ fitMap = false } = {}) {
+  if (!state.currentLocation) {
+    if (markers.currentLocation) {
+      markers.currentLocation.remove();
+      markers.currentLocation = null;
+    }
+    return;
+  }
+
+  const latLng = [state.currentLocation.lat, state.currentLocation.lon];
+
+  if (!markers.currentLocation) {
+    markers.currentLocation = L.marker(latLng, {
+      icon: buildCurrentLocationIcon(),
+      zIndexOffset: 1200,
+    })
+      .addTo(map)
+      .bindPopup("現在地");
+  } else {
+    markers.currentLocation.setLatLng(latLng);
+  }
+
+  const heading = normalizeHeading(state.currentLocation.heading);
+  const markerElement = markers.currentLocation.getElement();
+  if (markerElement) {
+    markerElement.style.setProperty("--heading-rotation", heading !== null ? `${heading}deg` : "0deg");
+    markerElement.classList.toggle("has-heading", heading !== null);
+  }
+
+  if (markers.currentLocation.getPopup()) {
+    const popupText = heading !== null ? `現在地 / 方角 ${Math.round(heading)}°` : "現在地";
+    markers.currentLocation.getPopup().setContent(popupText);
+  }
+
+  if (fitMap) {
+    fitToVisibleLayers();
+  }
+}
+
 function updateMarker(target, place) {
   if (markers[target]) {
     markers[target].remove();
@@ -661,14 +934,132 @@ function fitToVisibleLayers() {
   if (markers.destination) {
     points.push(markers.destination.getLatLng());
   }
+  if (markers.currentLocation) {
+    points.push(markers.currentLocation.getLatLng());
+  }
 
   if (points.length === 2) {
+    map.fitBounds(L.latLngBounds(points), { padding: [40, 40] });
+  } else if (points.length >= 3) {
     map.fitBounds(L.latLngBounds(points), { padding: [40, 40] });
   } else if (points.length === 1) {
     map.setView(points[0], 14);
   } else {
     map.setView(defaultCenter, 13);
   }
+}
+
+function extractHeadingFromOrientation(event) {
+  if (typeof event.webkitCompassHeading === "number" && Number.isFinite(event.webkitCompassHeading)) {
+    return normalizeHeading(event.webkitCompassHeading);
+  }
+
+  if (event.absolute && typeof event.alpha === "number" && Number.isFinite(event.alpha)) {
+    return normalizeHeading(360 - event.alpha);
+  }
+
+  return null;
+}
+
+function handleDeviceOrientation(event) {
+  const heading = extractHeadingFromOrientation(event);
+  if (heading === null || !state.currentLocation) {
+    return;
+  }
+
+  if (state.currentLocation.heading !== null && state.currentLocation.heading !== undefined) {
+    const delta = Math.abs(state.currentLocation.heading - heading);
+    const wrappedDelta = Math.min(delta, 360 - delta);
+    if (wrappedDelta < 2) {
+      return;
+    }
+  }
+
+  state.currentLocation = {
+    ...state.currentLocation,
+    heading,
+  };
+  syncCurrentLocationMarker();
+}
+
+async function enableDeviceOrientationTracking() {
+  if (orientationTrackingEnabled || typeof DeviceOrientationEvent === "undefined") {
+    return;
+  }
+
+  if (typeof DeviceOrientationEvent.requestPermission === "function") {
+    try {
+      const permission = await DeviceOrientationEvent.requestPermission();
+      if (permission !== "granted") {
+        return;
+      }
+    } catch (error) {
+      console.warn(error);
+      return;
+    }
+  }
+
+  const eventName = "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
+  window.addEventListener(eventName, handleDeviceOrientation, true);
+  orientationTrackingEnabled = true;
+}
+
+function buildGeolocationErrorMessage(error) {
+  if (error && error.code === error.PERMISSION_DENIED) {
+    return "位置情報の利用が許可されていません。ブラウザ設定を確認してください。";
+  }
+  if (error && error.code === error.TIMEOUT) {
+    return "現在地の取得がタイムアウトしました。";
+  }
+  return "現在地を取得できませんでした。";
+}
+
+function applyCurrentLocationPosition(position, { setAsOrigin = false, fitMap = false, statusText = "" } = {}) {
+  const nextLocation = {
+    lat: Number(position.coords.latitude.toFixed(6)),
+    lon: Number(position.coords.longitude.toFixed(6)),
+    heading: normalizeHeading(position.coords.heading),
+  };
+
+  state.currentLocation = nextLocation;
+  syncCurrentLocationMarker({ fitMap });
+
+  if (setAsOrigin) {
+    const place = buildCurrentLocationPlace(nextLocation);
+    elements.originInput.value = place.name;
+    choosePlace("origin", place, { clearRoute: true, persist: false, fitMap: false });
+  } else if (state.origin && isCurrentLocationPlace(state.origin) && !state.route) {
+    const place = buildCurrentLocationPlace(nextLocation);
+    state.origin = normalizePlace(place);
+    renderSelectedPlace("origin", state.origin);
+    updateMarker("origin", state.origin);
+  }
+
+  saveState();
+
+  if (statusText) {
+    setStatus(statusText, "success");
+  }
+}
+
+function ensureCurrentLocationWatch() {
+  if (!navigator.geolocation || currentLocationWatchId !== null) {
+    return;
+  }
+
+  currentLocationWatchId = navigator.geolocation.watchPosition(
+    (position) => {
+      applyCurrentLocationPosition(position, { setAsOrigin: false, fitMap: false });
+    },
+    (error) => {
+      console.warn(error);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 2000,
+      timeout: 10000,
+    },
+  );
 }
 
 async function useCurrentLocation() {
@@ -678,28 +1069,25 @@ async function useCurrentLocation() {
   }
 
   setStatus("現在地を取得しています。", "info");
+  await enableDeviceOrientationTracking();
 
   navigator.geolocation.getCurrentPosition(
     (position) => {
-      const place = {
-        name: "現在地",
-        category: "current",
-        description: "ブラウザの位置情報から取得",
-        lat: position.coords.latitude,
-        lon: position.coords.longitude,
-        source: "geolocation",
-      };
-      state.currentLocation = { lat: place.lat, lon: place.lon };
-      elements.originInput.value = "現在地";
-      choosePlace("origin", place);
-      fitToVisibleLayers();
-      saveState();
-      setStatus("現在地を出発地に設定しました。", "success");
+      applyCurrentLocationPosition(position, {
+        setAsOrigin: true,
+        fitMap: true,
+        statusText: "現在地を出発地に設定しました。",
+      });
+      ensureCurrentLocationWatch();
     },
-    () => {
-      setStatus("現在地を取得できませんでした。", "error");
+    (error) => {
+      setStatus(buildGeolocationErrorMessage(error), "error");
     },
-    { enableHighAccuracy: true, timeout: 8000 },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 2000,
+      timeout: 10000,
+    },
   );
 }
 
@@ -736,6 +1124,7 @@ async function previewPreferences({ quiet = false } = {}) {
     saveState();
 
     if (!quiet) {
+      switchPanel("route", { expand: !isSmallViewport(), persist: false });
       setStatus("要望を解析しました。", "success");
     }
   } catch (error) {
@@ -766,10 +1155,12 @@ function renderPreferenceTags(parsed) {
 
 async function requestRoute() {
   if (!state.origin || !state.destination) {
+    switchPanel("search", { expand: true, persist: false });
     setStatus("出発地と目的地を設定してください。", "warning");
     return;
   }
 
+  switchPanel("route", { expand: true, persist: false });
   setStatus("ルートを作成しています。", "info");
 
   try {
@@ -825,6 +1216,7 @@ function applyRoute(route, options = {}) {
   }).addTo(map);
 
   fitToVisibleLayers();
+  switchPanel("route", { expand: true, persist: false });
 
   if (settings.persist) {
     saveState();
@@ -883,6 +1275,7 @@ function clearRoute(options = {}) {
   }
 
   if (!settings.keepStatus) {
+    switchPanel("search", { expand: !isSmallViewport(), persist: false });
     setStatus("ルートを消去しました。", "info");
   }
 }
@@ -983,6 +1376,7 @@ function renderNavigation() {
 
 function setMapPickMode(mode) {
   state.mapPickMode = mode;
+  switchPanel("search", { expand: true, persist: false });
   renderMapPickState();
   saveState();
 }
@@ -1021,6 +1415,7 @@ function handleMapClick(event) {
   choosePlace(target, place);
   inputForTarget(target).value = place.name;
   setMapPickMode(null);
+  switchPanel("route", { expand: true, persist: false });
   setStatus(`${target === "origin" ? "出発地" : "目的地"}を地図から設定しました。`, "success");
 }
 
@@ -1084,12 +1479,15 @@ function saveState() {
     destination: state.destination,
     route: state.route,
     currentLocation: state.currentLocation,
+    networkInfo: state.networkInfo,
     profile: elements.profileSelect.value,
     preferences: elements.preferencesInput.value,
     activeTarget: state.activeTarget,
     customApiBase: state.customApiBase,
     assistantMessages: state.assistantMessages,
     assistantModel: state.assistantModel,
+    activePanel: state.activePanel,
+    sheetCollapsed: state.sheetCollapsed,
   };
 
   localStorage.setItem(storageKey, JSON.stringify(payload));
@@ -1109,9 +1507,15 @@ function restoreState() {
 
     state.currentLocation = parsed.currentLocation || null;
     state.route = parsed.route || null;
+    state.networkInfo = parsed.networkInfo || null;
     state.customApiBase = normalizeApiBase(parsed.customApiBase || "");
     state.assistantMessages = Array.isArray(parsed.assistantMessages) ? parsed.assistantMessages.slice(-12) : [];
     state.assistantModel = parsed.assistantModel || "Ollama";
+    state.activePanel = ["search", "route", "ai", "access"].includes(parsed.activePanel)
+      ? parsed.activePanel
+      : "search";
+    state.sheetCollapsed =
+      typeof parsed.sheetCollapsed === "boolean" ? parsed.sheetCollapsed : window.matchMedia("(max-width: 720px)").matches;
     setActiveTarget(parsed.activeTarget === "destination" ? "destination" : "origin");
 
     elements.profileSelect.value = parsed.profile || "walk";
@@ -1243,6 +1647,7 @@ function applyCustomApiBase(value, { persist = true, reconnect = true, quiet = f
 function applyApiBaseFromInput() {
   try {
     applyCustomApiBase(elements.apiBaseInput.value, { persist: true, reconnect: true, quiet: false });
+    focusPanel("access");
     if (state.customApiBase) {
       setStatus(`API 接続先を設定しました: ${state.customApiBase}`, "info");
     }
@@ -1256,6 +1661,7 @@ function clearCustomApiBase() {
   state.customApiBase = "";
   syncApiBaseInput();
   saveState();
+  switchPanel("access", { expand: true, persist: false });
   setStatus("API 接続先を自動判定に戻しました", "info");
   void detectApiBase({ quiet: false, force: true });
 }
@@ -1288,10 +1694,24 @@ function buildApiCandidates() {
     pushCandidate(state.apiBase);
   }
 
+  const publicApiBase =
+    (state.networkInfo && state.networkInfo.public_api_base_url) || state.appInfo.public_api_base_url;
+  if (publicApiBase && canUseApiBaseFromCurrentPage(publicApiBase)) {
+    pushCandidate(publicApiBase);
+  }
+
   const isHttpPage = location.protocol === "http:" || location.protocol === "https:";
   const isPrivatePage = isPrivateNetworkHost(location.hostname);
 
-  if (isHttpPage && (location.port === "8000" || isPrivatePage || isLoopbackHost(location.hostname))) {
+  if (
+    isHttpPage &&
+    (
+      location.port === "8000" ||
+      isPrivatePage ||
+      isLoopbackHost(location.hostname) ||
+      (location.protocol === "https:" && !location.hostname.endsWith(".vercel.app"))
+    )
+  ) {
     pushCandidate(location.origin);
   }
 
@@ -1351,6 +1771,7 @@ function setConnectionState(isAvailable, base = state.apiBase, { quiet = false }
 
   if (!wasAvailable && isAvailable) {
     void loadAppInfo();
+    void loadNetworkInfo();
     if (elements.preferencesInput.value.trim()) {
       void previewPreferences({ quiet: true });
     }
@@ -1361,9 +1782,10 @@ function setConnectionState(isAvailable, base = state.apiBase, { quiet = false }
   }
 
   if (isAvailable) {
-    setStatus(`ローカルサーバーへ接続しました: ${base}`, "success");
+    setStatus(`サーバーへ接続しました: ${base}`, "success");
   } else {
-    setStatus("ローカルサーバー待機中です。起動後に自動再接続します。", "warning");
+    renderNetworkInfo();
+    setStatus("接続先が見つかりません。LAN URL か公開 API URL を確認してください。", "warning");
   }
 }
 
